@@ -25,6 +25,15 @@
 
       <main class="workspace">
         <div id="optimize-view" class="app-view">
+        <section class="panel provider-panel" aria-labelledby="provider-heading">
+          <div class="section-header">
+            <h2 id="provider-heading">API Connection Status</h2>
+            <button id="refresh-provider-status" class="secondary-button" type="button">Refresh API Status</button>
+          </div>
+          <p id="provider-status-message" class="muted-copy" role="status" aria-live="polite">Checking provider connections…</p>
+          <div id="provider-status-list" class="provider-status-list"></div>
+        </section>
+
         <section class="panel">
           <div class="section-header">
             <h2>Original Prompt</h2>
@@ -81,8 +90,16 @@
           <div class="section-header">
             <h2>Optimization Progress</h2>
           </div>
-          <div class="stepper" id="stepper"></div>
+          <ol class="stepper" id="stepper" aria-label="Optimization stages"></ol>
           <div class="progress-summary" id="progress-summary"></div>
+          <div class="progress-metrics" aria-live="polite">
+            <div class="info-box"><strong>Iteration</strong><span id="progress-iteration">—</span></div>
+            <div class="info-box"><strong>Candidates</strong><span id="progress-candidates">—</span></div>
+            <div class="info-box"><strong>Model calls</strong><span id="progress-model-calls">—</span></div>
+            <div class="info-box"><strong>Best quality</strong><span id="progress-best-quality">—</span></div>
+            <div class="info-box"><strong>Best prompt tokens</strong><span id="progress-best-tokens">—</span></div>
+          </div>
+          <div id="rate-limit-alert" class="rate-limit-alert hidden" role="status" aria-live="polite"></div>
           <div class="actions-row">
             <button id="cancel-optimization" class="secondary-button">Cancel optimization</button>
           </div>

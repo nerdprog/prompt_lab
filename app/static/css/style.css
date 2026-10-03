@@ -220,29 +220,117 @@ textarea {
 }
 
 .stepper {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
   gap: 8px;
   margin-bottom: 14px;
+  padding: 0;
+  list-style: none;
 }
 
 .stepper-item {
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 12px;
   background: var(--panel-alt);
-  padding: 6px 10px;
+  padding: 9px 11px;
   font-size: 0.8rem;
 }
 
-.stepper-item.active {
-  background: var(--dark);
-  color: #fff;
-  border-color: var(--dark);
+.stepper-item.completed {
+  border-color: #79a78a;
+  background: #eff8f1;
+  color: #174b29;
+}
+
+.stepper-item.running {
+  border-color: #ad8a2a;
+  background: #fff8df;
+  color: #5a4609;
+}
+
+.stepper-item.failed {
+  border-color: #c78080;
+  background: #fff0f0;
+  color: #721c24;
 }
 
 .progress-summary {
   color: var(--muted);
   min-height: 20px;
+  margin-bottom: 12px;
+}
+
+.progress-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.progress-metrics .info-box span {
+  overflow-wrap: anywhere;
+}
+
+.rate-limit-alert {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid #d4ad47;
+  border-radius: 12px;
+  background: #fff8df;
+  color: #57440a;
+  line-height: 1.5;
+  white-space: pre-line;
+}
+
+.provider-status-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.provider-status-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--panel-alt);
+}
+
+.provider-status-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.provider-status-indicator {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border-radius: 50%;
+  background: #8b8b86;
+}
+
+.provider-status-card[data-state="working"] .provider-status-indicator {
+  background: #258344;
+}
+
+.provider-status-card[data-state="failed"] .provider-status-indicator {
+  background: #b42318;
+}
+
+.provider-status-card[data-state="warning"] .provider-status-indicator {
+  background: #b78103;
+}
+
+.provider-status-card p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.provider-status-state {
+  font-weight: 700;
+  color: var(--text) !important;
 }
 
 .result-card {

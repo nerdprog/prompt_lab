@@ -6,10 +6,17 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from app.schemas.task import IntentEditRequest, OptimizationStartRequest
 from app.services.optimizer.optimization_service import OptimizationService
 from app.services.pdf.report_generator import ReportGenerator
+from app.services.providers.health import (
+    classify_provider_exception,
+    classify_provider_error,
+    provider_status,
+    safe_provider_error_message,
+)
 from app.state.session_state import get_session, update_session
 
 router = APIRouter(prefix="/api/optimization")
@@ -20,7 +27,7 @@ logger = logging.getLogger(__name__)
 @router.post("/start")
 async def start_optimization(payload: OptimizationStartRequest):
     try:
-        session = service.start(payload)
+        session = await run_in_threadpool(service.start, payload)
         return {
             "success": True,
             "data": {
@@ -31,15 +38,30 @@ async def start_optimization(payload: OptimizationStartRequest):
             },
         }
     except (ValueError, RuntimeError) as exc:
+        error_code = classify_provider_error(str(exc))
+        if error_code != "PROVIDER_ERROR":
+            message = safe_provider_error_message(error_code, "Gemini Optimizer")
+            status_code = 503 if error_code == "TEMPORARILY_UNAVAILABLE" else 429 if error_code in {
+                "RATE_LIMITED", "QUOTA_EXCEEDED"
+            } else 502
+            return JSONResponse(status_code=status_code, content={
+                "success": False,
+                "error": {"code": error_code.lower(), "message": message, "details": {}},
+            })
         return JSONResponse(status_code=400, content={
             "success": False,
             "error": {"code": "start_error", "message": str(exc), "details": {}},
         })
     except Exception as exc:
-        logger.error("Task understanding failed (%s).", type(exc).__name__)
-        return JSONResponse(status_code=500, content={
+        error_code = classify_provider_exception(exc)
+        logger.error("Task understanding failed (%s).", error_code)
+        message = safe_provider_error_message(error_code, "Gemini Optimizer")
+        status_code = 503 if error_code == "TEMPORARILY_UNAVAILABLE" else 429 if error_code in {
+            "RATE_LIMITED", "QUOTA_EXCEEDED"
+        } else 502
+        return JSONResponse(status_code=status_code, content={
             "success": False,
-            "error": {"code": "task_understanding_failed", "message": "Task understanding failed. Please retry.", "details": {}},
+            "error": {"code": error_code.lower(), "message": message, "details": {}},
         })
 
 
@@ -53,7 +75,9 @@ async def confirm_understanding(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     try:
-        session = service.confirm_and_prepare(session_id, payload.task_spec.model_dump())
+        session = await run_in_threadpool(
+            service.confirm_and_prepare, session_id, payload.task_spec.model_dump()
+        )
         background_tasks.add_task(service.run_optimization, session_id)
     except (ValueError, RuntimeError, ValidationError) as exc:
         return JSONResponse(status_code=400, content={
@@ -85,6 +109,19 @@ async def get_progress(session_id: str):
         return {"success": True, "data": service.get_status(session_id)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Session not found") from exc
+
+
+@router.get("/{session_id}/status")
+async def get_session_status(session_id: str):
+    try:
+        return {"success": True, "data": service.get_status(session_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+
+
+@router.get("/providers/status")
+def get_provider_status(force_refresh: bool = False):
+    return {"success": True, "data": provider_status(force_refresh=force_refresh)}
 
 
 @router.get("/{session_id}/candidates")
@@ -152,5 +189,12 @@ async def cancel(session_id: str):
     session = get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    update_session(session_id, status="cancelled", stop_reason="cancelled")
+    update_session(
+        session_id,
+        status="cancelled",
+        stop_reason="cancelled",
+        cancellation_requested=True,
+        rate_limit_status="cancelled" if session.get("rate_limit_status") else None,
+        rate_limit_retry_at=None,
+    )
     return {"success": True, "data": {"sessionId": session_id, "status": "cancelled"}}

@@ -33,6 +33,16 @@ def test_mock_session_completes_and_writes_report(monkeypatch, tmp_path):
     assert completed["final_evaluation"]["baseline"]["score"] is not None
     assert completed["iterations"][0]["edited_candidates"]
     assert completed["insights"]
+    assert completed["progress_stages"]["understanding_task"] == "completed"
+    assert completed["progress_stages"]["building_rubric"] == "completed"
+    assert completed["progress_stages"]["generating_candidates"] == "completed"
+    assert completed["progress_stages"]["final_evaluation"] == "completed"
+    assert completed["progress_stages"]["report_generation"] == "completed"
+    assert completed["active_candidate_count"] == 3
+    assert completed["total_candidate_count"] == len(completed["candidates"])
+    assert completed["current_best_quality"] is not None
+    assert completed["current_best_prompt_token_count"] is None
+    assert completed["token_count_error"] == "Exact token counting is unavailable in mock mode."
     assert all(candidate["source"] == "mock" for candidate in completed["candidates"])
     assert completed.get("report_error") is None, completed.get("report_error")
     assert Path(completed["report_path"]).read_bytes().startswith(b"%PDF")
@@ -129,8 +139,13 @@ def test_api_confirmation_runs_mock_optimization_and_downloads_pdf(monkeypatch, 
     assert 'data-view="about"' in html
     assert 'id="session-view"' in html
     assert 'id="about-view"' in html
+    assert 'id="provider-status-list"' in html
+    assert 'id="refresh-provider-status"' in html
+    assert 'id="progress-best-tokens"' in html
     app_js = client.get("/static/js/app.js")
     assert app_js.status_code == 200
+    assert "/api/providers/status" in app_js.text
+    assert "/status`" in app_js.text
     assert "function refreshCurrentSession()" in app_js.text
     assert "function renderCurrentSession(session)" in app_js.text
     started = client.post("/api/optimization/start", json={
@@ -151,6 +166,10 @@ def test_api_confirmation_runs_mock_optimization_and_downloads_pdf(monkeypatch, 
     assert confirmed.status_code == 200
     result = client.get(f"/api/optimization/{session_id}/results")
     assert result.json()["data"]["status"] == "completed"
+    progress = client.get(f"/api/optimization/{session_id}/status").json()["data"]
+    assert progress["status"] == "completed"
+    assert progress["progress_stages"]["report_generation"] == "completed"
+    assert progress["report_ready"] is True
     current_session = client.get(f"/api/optimization/{session_id}")
     assert current_session.status_code == 200
     assert current_session.json()["data"]["final_evaluation"]["top3"]

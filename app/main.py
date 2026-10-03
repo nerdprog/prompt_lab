@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes_optimization import router as optimization_router
+from app.services.providers.health import provider_status as get_provider_status
 
 app = FastAPI(title="PromptLab", version="1.0.0")
 app.include_router(optimization_router)
@@ -34,6 +35,11 @@ async def add_security_headers(request, call_next):
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(BASE_DIR / "templates" / "index.html")
+
+
+@app.get("/api/providers/status")
+def providers_status(force_refresh: bool = False) -> dict[str, object]:
+    return {"success": True, "data": get_provider_status(force_refresh=force_refresh)}
 
 
 @app.get("/health")

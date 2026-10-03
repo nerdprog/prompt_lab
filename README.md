@@ -59,13 +59,16 @@ The judge scores responses against the task-specific rubric and calculates a wei
 Set required values using environment variables. A safe template appears in `.env.example`.
 
 Required runtime values:
-- GEMINI_API_KEY
+- GEMINI_OPTIMIZER_API_KEY
+- GEMINI_PERFORMER_API_KEY
 - GROQ_API_KEY
+
+The Gemini optimizer and performer credentials are independent and are never substituted for one another. The legacy shared `GEMINI_API_KEY` is not used for either role. The corresponding model names are independently read from `GEMINI_OPTIMIZER_MODEL` and `GEMINI_PERFORMER_MODEL`.
 
 Optional tuning variables:
 - PORT
-- OPTIMIZER_MODEL
-- PERFORMER_MODEL
+- GEMINI_OPTIMIZER_MODEL
+- GEMINI_PERFORMER_MODEL
 - JUDGE_MODEL
 - DEFAULT_ACTIVE_CANDIDATES
 - DEFAULT_EDITED_CANDIDATES
@@ -80,6 +83,8 @@ Optional tuning variables:
 - ALLOW_MOCK_LLMS
 
 When `ALLOW_MOCK_LLMS=true`, deterministic local TaskIntent/rubric/candidate/Performer/Judge behavior is used and explicitly marked as mock. Mock operation does not test provider connectivity or live model behavior. When mock mode is disabled, Gemini and Groq keys are required. The Judge uses Groq's OpenAI-compatible API with the `openai` Python SDK pointed at `https://api.groq.com/openai/v1`; this SDK dependency is a client library, not a requirement for an OpenAI API key or OpenAI Judge account.
+
+The Optimize view displays provider configuration and the result of minimal live health checks; green is shown only after a provider responds successfully. In mock mode providers are explicitly marked unverified. Optimization progress is polled from backend session state, including stage status, call budget, candidate counts, quality, and provider rate-limit waits.
 
 ## Session state
 
@@ -120,6 +125,8 @@ Core optimization endpoints:
 - `POST /api/optimization/{session_id}/confirm-understanding`
 - `GET /api/optimization/{session_id}`
 - `GET /api/optimization/{session_id}/progress`
+- `GET /api/optimization/{session_id}/status`
+- `GET /api/providers/status`
 - `GET /api/optimization/{session_id}/results`
 - `GET /api/optimization/{session_id}/report`
 - `POST /api/optimization/{session_id}/cancel`

@@ -43,21 +43,42 @@ class CandidateGenerator:
         rubric: dict | None = None,
         on_llm_call: Callable[[], None] | None = None,
     ) -> list[dict]:
-        candidates = self.optimizer.generate_initial_candidates(
-            task_spec, prompt, count, rubric, on_llm_call
-        )
-        if len(candidates) != count:
-            raise ValueError(f"Candidate generator returned {len(candidates)} candidates; requested {count}.")
-        for candidate in candidates:
-            candidate.setdefault("candidate_id", f"cand-{uuid.uuid4().hex[:8]}")
-            candidate.setdefault("created_at", self._utc_now())
-            candidate.setdefault("status", "new")
-            candidate.setdefault("pull_count", 0)
-            candidate.setdefault("mean_reward", 0.0)
-            candidate.setdefault("total_reward", 0.0)
-            self._validate_intent(candidate, task_spec)
-        self._validate_diversity(candidates, [prompt])
-        return candidates
+        validation_feedback = None
+        last_error: ValueError | None = None
+        for attempt in range(2):
+            candidates = self.optimizer.generate_initial_candidates(
+                task_spec,
+                prompt,
+                count,
+                rubric,
+                on_llm_call,
+                validation_feedback=validation_feedback,
+            )
+            try:
+                if len(candidates) != count:
+                    raise ValueError(
+                        f"Candidate generator returned {len(candidates)} candidates; requested {count}."
+                    )
+                for candidate in candidates:
+                    candidate.setdefault("candidate_id", f"cand-{uuid.uuid4().hex[:8]}")
+                    candidate.setdefault("created_at", self._utc_now())
+                    candidate.setdefault("status", "new")
+                    candidate.setdefault("pull_count", 0)
+                    candidate.setdefault("mean_reward", 0.0)
+                    candidate.setdefault("total_reward", 0.0)
+                    self._validate_intent(candidate, task_spec)
+                self._validate_diversity(candidates, [prompt])
+                return candidates
+            except ValueError as exc:
+                last_error = exc
+                if attempt:
+                    raise
+                validation_feedback = (
+                    "The prior batch failed intent-fidelity or diversity validation. "
+                    "Regenerate the full batch with distinct prompts, preserve all stated requirements, "
+                    "and introduce no assumptions."
+                )
+        raise last_error or ValueError("Candidate generation validation failed.")
 
     def generate_edited(
         self,
@@ -72,26 +93,47 @@ class CandidateGenerator:
         existing_prompts: list[str] | None = None,
         on_llm_call: Callable[[], None] | None = None,
     ) -> list[dict]:
-        edited = self.optimizer.generate_edited_candidate(
-            parent, feedback, task_spec, count, rubric, insights, original_prompt, iteration,
-            on_llm_call,
-        )
-        if len(edited) != count:
-            raise ValueError(f"Candidate editor returned {len(edited)} children; requested {count}.")
-        for candidate in edited:
-            candidate.setdefault("candidate_id", f"cand-{uuid.uuid4().hex[:8]}")
-            candidate.setdefault("generated_at", self._utc_now())
-            candidate.setdefault("parent_id", parent.get("candidate_id"))
-            candidate.setdefault("generation", int(parent.get("generation", 0)) + 1)
-            candidate.setdefault("created_at", self._utc_now())
-            candidate.setdefault("status", "new")
-            candidate.setdefault("pull_count", 0)
-            candidate.setdefault("mean_reward", 0.0)
-            candidate.setdefault("total_reward", 0.0)
-            if not candidate.get("prompt_text", "").strip():
-                raise ValueError("Generated child prompt is empty.")
-            if candidate["prompt_text"].strip() == parent["prompt_text"].strip():
-                raise ValueError("Generated child prompt duplicates its parent.")
-            self._validate_intent(candidate, task_spec)
-        self._validate_diversity(edited, existing_prompts)
-        return edited
+        validation_feedback = None
+        last_error: ValueError | None = None
+        for attempt in range(2):
+            edited = self.optimizer.generate_edited_candidate(
+                parent,
+                feedback,
+                task_spec,
+                count,
+                rubric,
+                insights,
+                original_prompt,
+                iteration,
+                on_llm_call,
+                validation_feedback=validation_feedback,
+            )
+            try:
+                if len(edited) != count:
+                    raise ValueError(f"Candidate editor returned {len(edited)} children; requested {count}.")
+                for candidate in edited:
+                    candidate.setdefault("candidate_id", f"cand-{uuid.uuid4().hex[:8]}")
+                    candidate.setdefault("generated_at", self._utc_now())
+                    candidate.setdefault("parent_id", parent.get("candidate_id"))
+                    candidate.setdefault("generation", int(parent.get("generation", 0)) + 1)
+                    candidate.setdefault("created_at", self._utc_now())
+                    candidate.setdefault("status", "new")
+                    candidate.setdefault("pull_count", 0)
+                    candidate.setdefault("mean_reward", 0.0)
+                    candidate.setdefault("total_reward", 0.0)
+                    if not candidate.get("prompt_text", "").strip():
+                        raise ValueError("Generated child prompt is empty.")
+                    if candidate["prompt_text"].strip() == parent["prompt_text"].strip():
+                        raise ValueError("Generated child prompt duplicates its parent.")
+                    self._validate_intent(candidate, task_spec)
+                self._validate_diversity(edited, existing_prompts)
+                return edited
+            except ValueError as exc:
+                last_error = exc
+                if attempt:
+                    raise
+                validation_feedback = (
+                    "The prior child batch failed intent-fidelity or diversity validation. "
+                    "Regenerate distinct child prompts that preserve all stated requirements and introduce no assumptions."
+                )
+        raise last_error or ValueError("Candidate editing validation failed.")

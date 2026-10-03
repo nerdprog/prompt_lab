@@ -125,6 +125,7 @@ class PerformerResult(BaseModel):
     status: Literal["success", "failed", "mock"] = "success"
     source: Literal["gemini", "mock"] = "gemini"
     error: str | None = None
+    error_code: str | None = None
     latency_ms: int = Field(..., ge=0)
     token_usage: dict[str, Any] = Field(default_factory=dict)
     created_at: str

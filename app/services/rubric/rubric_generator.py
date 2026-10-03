@@ -3,8 +3,32 @@ from __future__ import annotations
 import json
 from typing import Callable
 
+from pydantic import ValidationError
+
 from app.core.config import get_settings
 from app.schemas.task import RubricCriterion, TaskIntent, TaskRubric
+from app.services.providers.health import classify_provider_error
+
+_RUBRIC_RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "task_type": {"type": "STRING"},
+        "criteria": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "criterion": {"type": "STRING"},
+                    "description": {"type": "STRING"},
+                    "weight": {"type": "NUMBER"},
+                    "scoring_scale": {"type": "STRING"},
+                },
+                "required": ["criterion", "description", "weight", "scoring_scale"],
+            },
+        },
+    },
+    "required": ["task_type", "criteria"],
+}
 
 
 def _criterion(name: str, description: str, weight: float) -> RubricCriterion:
@@ -80,10 +104,10 @@ def _generate_with_gemini(
     on_llm_call: Callable[[], None] | None = None,
 ) -> TaskRubric:
     settings = get_settings()
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 
-    genai.configure(api_key=settings.gemini_api_key)
-    model = genai.GenerativeModel(settings.optimizer_model)
+    client = genai.Client(api_key=settings.optimizer_key)
     request_data = {
         "original_task": original_task,
         "task_intent": intent.model_dump(),
@@ -91,7 +115,7 @@ def _generate_with_gemini(
             "Create criteria relevant to this specific task, not a generic prompt-writing rubric.",
             "Include Intent Fidelity as a first-class criterion.",
             "Weights must be positive and sum to 1.0.",
-            "Use a 0-10 scoring scale and provide a clear scoring guide for each criterion.",
+            "Use a 0-10 scoring scale and provide a clear scoring guide for each criterion as one string in scoring_scale, not an object.",
             "Return JSON only with task_type and criteria containing criterion, description, weight, scoring_scale.",
         ],
     }
@@ -99,21 +123,37 @@ def _generate_with_gemini(
     for attempt in range(2):
         instruction = "Generate a task-specific rubric from the input JSON. " + json.dumps(request_data)
         if attempt:
-            instruction += " Repair the previous response so it is valid JSON and all weights sum to 1.0."
+            instruction += (
+                " Repair the prior output to match the schema exactly. Each scoring_scale must be a string, "
+                "not an object, and all weights must sum to 1.0."
+            )
         if on_llm_call:
             on_llm_call()
         try:
-            response = model.generate_content(
-                instruction,
-                generation_config={"response_mime_type": "application/json"},
-                request_options={"timeout": 45},
+            response = client.models.generate_content(
+                model=settings.optimizer_model,
+                contents=instruction,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=_RUBRIC_RESPONSE_SCHEMA,
+                ),
             )
-            if not response.text:
+            text = getattr(response, "text", None) or ""
+            if not text:
                 raise ValueError("Rubric model returned empty output.")
-            return TaskRubric.model_validate_json(response.text)
+            return TaskRubric.model_validate_json(text)
         except Exception as exc:
+            if classify_provider_error(str(exc)) == "RATE_LIMITED":
+                raise
             last_error = exc
-    raise ValueError(f"Task-specific rubric generation failed: {last_error}") from last_error
+    if isinstance(last_error, (json.JSONDecodeError, ValidationError, ValueError)):
+        raise RuntimeError(
+            "Task-specific rubric generation returned invalid structured output after one repair attempt."
+        ) from last_error
+    error_code = classify_provider_error(str(last_error))
+    raise RuntimeError(
+        f"Task-specific rubric generation failed ({error_code})."
+    ) from last_error
 
 
 def build_rubric(
@@ -122,8 +162,8 @@ def build_rubric(
     on_llm_call: Callable[[], None] | None = None,
 ) -> TaskRubric:
     settings = get_settings()
-    if settings.has_gemini_config and not settings.allow_mock_llms:
+    if settings.has_optimizer_config and not settings.allow_mock_llms:
         return _generate_with_gemini(task_intent, original_task, on_llm_call)
     if not settings.allow_mock_llms:
-        raise RuntimeError("Gemini API key is required to generate a task-specific rubric.")
+        raise RuntimeError("GEMINI_OPTIMIZER_API_KEY is required to generate a task-specific rubric.")
     return _compose_rubric(task_intent, original_task)

@@ -4,10 +4,19 @@ const preferencesInput = document.getElementById('preferences-input');
 const validationMessage = document.getElementById('validation-message');
 const understandingPanel = document.getElementById('understanding-panel');
 const progressPanel = document.getElementById('progress-panel');
+const cancelOptimizationButton = document.getElementById('cancel-optimization');
 const resultsPanel = document.getElementById('results-panel');
 const understandingContent = document.getElementById('understanding-content');
 const progressSummary = document.getElementById('progress-summary');
 const stepper = document.getElementById('stepper');
+const progressIteration = document.getElementById('progress-iteration');
+const progressCandidates = document.getElementById('progress-candidates');
+const progressModelCalls = document.getElementById('progress-model-calls');
+const progressBestQuality = document.getElementById('progress-best-quality');
+const progressBestTokens = document.getElementById('progress-best-tokens');
+const rateLimitAlert = document.getElementById('rate-limit-alert');
+const providerStatusList = document.getElementById('provider-status-list');
+const providerStatusMessage = document.getElementById('provider-status-message');
 const resultsContent = document.getElementById('results-content');
 const charCount = document.getElementById('char-count');
 const intentEditor = document.getElementById('intent-editor');
@@ -27,15 +36,25 @@ const sessionInsights = document.getElementById('session-insights');
 const sessionReportActions = document.getElementById('session-report-actions');
 
 const steps = [
-  'Understanding task', 'Building rubric', 'Generating candidates', 'Testing responses',
-  'Judging responses', 'Improving candidates', 'Selecting candidates', 'Final evaluation',
-  'Generating report',
+  ['understanding_task', 'Understanding task'],
+  ['building_rubric', 'Building rubric'],
+  ['generating_candidates', 'Generating candidates'],
+  ['ucb_selection', 'UCB selection'],
+  ['performer_execution', 'Performer execution'],
+  ['judge_evaluation', 'Judge evaluation'],
+  ['stage_a_optimization', 'Stage A optimization'],
+  ['insight_update', 'Insight update'],
+  ['next_iteration', 'Next iteration'],
+  ['final_evaluation', 'Final evaluation'],
+  ['report_generation', 'Report generation'],
 ];
 let currentSessionId = null;
 let currentTaskSpec = null;
 let pollingTimer = null;
 let optimizationRunning = false;
 let activeView = 'optimize';
+let progressRequestInFlight = false;
+let providerCheckInFlight = false;
 
 document.querySelectorAll('.nav-item[data-view]').forEach((button) => {
   button.addEventListener('click', () => {
@@ -44,6 +63,7 @@ document.querySelectorAll('.nav-item[data-view]').forEach((button) => {
 });
 
 document.getElementById('refresh-session').addEventListener('click', refreshCurrentSession);
+document.getElementById('refresh-provider-status').addEventListener('click', () => refreshProviderStatus(true));
 
 function switchView(viewName) {
   activeView = viewName;
@@ -72,24 +92,32 @@ function restoreCurrentSession() {
       renderUnderstanding(currentTaskSpec);
       understandingPanel.classList.remove('hidden');
     }
-    if (['initialized', 'ready', 'running', 'final_evaluation'].includes(session.status)) {
+    if (['initialized', 'ready', 'running', 'paused_rate_limit', 'final_evaluation', 'report_generation'].includes(session.status)) {
       optimizationRunning = true;
+      cancelOptimizationButton.disabled = false;
       progressPanel.classList.remove('hidden');
       startPolling();
-    } else if (session.status === 'completed' && session.final_evaluation) {
-      renderResults({
-        finalEvaluation: session.final_evaluation,
-        stopReason: session.stop_reason,
-      });
-      if (session.report_path) {
-        document.getElementById('download-report').href = `/api/optimization/${currentSessionId}/report`;
-        reportActions.classList.remove('hidden');
+    } else if (['completed', 'failed', 'cancelled'].includes(session.status)) {
+      optimizationRunning = false;
+      cancelOptimizationButton.disabled = true;
+      progressPanel.classList.remove('hidden');
+      startPolling();
+      if (session.status === 'completed' && session.final_evaluation) {
+        renderResults({
+          finalEvaluation: session.final_evaluation,
+          stopReason: session.stop_reason,
+        });
+        if (session.report_path) {
+          document.getElementById('download-report').href = `/api/optimization/${currentSessionId}/report`;
+          reportActions.classList.remove('hidden');
+        }
       }
     }
   });
 }
 
 restoreCurrentSession();
+refreshProviderStatus();
 
 promptInput.addEventListener('input', () => {
   charCount.textContent = `${promptInput.value.length} characters`;
@@ -103,6 +131,13 @@ document.getElementById('optimize-button').addEventListener('click', async () =>
   if (prompt.length > 12000) {
     return showValidation('Your prompt is too long for reliable optimization. Please shorten it or provide the essential requirements.');
   }
+  progressPanel.classList.remove('hidden');
+  cancelOptimizationButton.disabled = true;
+  resultsPanel.classList.add('hidden');
+  reportActions.classList.add('hidden');
+  progressSummary.textContent = 'Starting task understanding…';
+  renderStepper({});
+  setProgressMetrics(null);
   const payload = {
     prompt,
     optional_context: contextInput.value.trim() || null,
@@ -120,6 +155,7 @@ document.getElementById('optimize-button').addEventListener('click', async () =>
     });
     const data = await response.json();
     if (!response.ok || !data.success) {
+      progressPanel.classList.add('hidden');
       return showValidation(data.error?.message || 'Unable to start optimization.');
     }
     currentSessionId = data.data.sessionId;
@@ -127,10 +163,10 @@ document.getElementById('optimize-button').addEventListener('click', async () =>
     currentTaskSpec = data.data.taskSpec;
     renderUnderstanding(currentTaskSpec);
     understandingPanel.classList.remove('hidden');
-    progressPanel.classList.add('hidden');
-    resultsPanel.classList.add('hidden');
-    reportActions.classList.add('hidden');
+    progressSummary.textContent = 'Task understanding is ready. Review it, then confirm to begin optimization.';
+    startPolling();
   } catch {
+    progressPanel.classList.add('hidden');
     showValidation('Unable to reach PromptLab. Check that the server is running and retry.');
   }
 });
@@ -168,7 +204,7 @@ document.getElementById('confirm-understanding').addEventListener('click', async
     understandingPanel.classList.add('hidden');
     progressPanel.classList.remove('hidden');
     optimizationRunning = true;
-    renderStepper(0);
+    cancelOptimizationButton.disabled = false;
     progressSummary.textContent = 'Optimization started. Waiting for backend progress…';
     startPolling();
   } catch {
@@ -195,6 +231,7 @@ document.getElementById('reset-button').addEventListener('click', () => {
   charCount.textContent = '0 characters';
   understandingPanel.classList.add('hidden');
   progressPanel.classList.add('hidden');
+  cancelOptimizationButton.disabled = true;
   resultsPanel.classList.add('hidden');
   reportActions.classList.add('hidden');
   hideValidation();
@@ -203,35 +240,50 @@ document.getElementById('reset-button').addEventListener('click', () => {
 function startPolling() {
   if (pollingTimer) window.clearInterval(pollingTimer);
   refreshProgress();
-  pollingTimer = window.setInterval(refreshProgress, 1200);
+  pollingTimer = window.setInterval(refreshProgress, 1000);
 }
 
 async function refreshProgress() {
-  if (!currentSessionId) return;
+  if (!currentSessionId || progressRequestInFlight) return;
+  progressRequestInFlight = true;
   try {
-    const [progressResponse, resultResponse] = await Promise.all([
-      fetch(`/api/optimization/${currentSessionId}/progress`),
-      fetch(`/api/optimization/${currentSessionId}/results`),
-    ]);
+    const progressResponse = await fetch(`/api/optimization/${currentSessionId}/status`);
     const progressPayload = await progressResponse.json();
-    const resultPayload = await resultResponse.json();
-    if (!progressPayload.success) return;
+    if (!progressResponse.ok || !progressPayload.success) return;
     const p = progressPayload.data;
+    renderStepper(p.progress_stages || {});
     const current = Number(p.current_iteration || 0);
-    const max = Number(p.max_iterations || 1);
-    const activeStep = p.status === 'final_evaluation' ? 7 : p.status === 'completed' ? 8 : current ? 3 : 0;
-    renderStepper(activeStep);
-    progressSummary.textContent =
-      `Status: ${p.status}. Iteration ${current} / ${max}. Candidates: ${p.candidate_count}. ` +
-      `Evaluations: ${p.evaluations}. Best score: ${Number(p.best_score || 0).toFixed(3)}. ` +
-      `Model calls: ${p.llm_call_count} / ${p.max_llm_calls}.` +
-      (p.stop_reason ? ` Stop reason: ${p.stop_reason}.` : '');
+    const max = Number(p.max_iterations || 0);
+    const active = Number(p.active_candidate_count || 0);
+    const total = Number(p.candidate_count || 0);
+    const modelCalls = Number(p.llm_call_count || 0);
+    const callBudget = p.max_llm_calls == null ? '—' : p.max_llm_calls;
+    progressIteration.textContent = `${current} / ${max}`;
+    progressCandidates.textContent = `${active} active · ${total} total`;
+    progressModelCalls.textContent = `${modelCalls} / ${callBudget}`;
+    progressBestQuality.textContent = p.current_best_quality == null
+      ? '—'
+      : `${Math.round(Number(p.current_best_quality) * 100)}%`;
+    progressBestTokens.textContent = p.current_best_prompt_token_count == null
+      ? (p.token_count_error || '—')
+      : String(p.current_best_prompt_token_count);
+    progressSummary.textContent = p.status === 'awaiting_confirmation'
+      ? 'Task understanding is ready. Review it, then confirm to begin optimization.'
+      : p.status === 'paused_rate_limit'
+        ? 'Optimization paused because the provider rate limit was reached.'
+        : p.user_message || `Status: ${p.status}.` +
+          (p.stop_reason ? ` Stop reason: ${p.stop_reason}.` : '') +
+          (p.report_error ? ` ${p.report_error}` : '');
+    renderRateLimitState(p);
     if (['completed', 'failed', 'cancelled'].includes(p.status)) {
       optimizationRunning = false;
+      cancelOptimizationButton.disabled = true;
       window.clearInterval(pollingTimer);
       pollingTimer = null;
+      const resultResponse = await fetch(`/api/optimization/${currentSessionId}/results`);
+      const resultPayload = await resultResponse.json();
       if (resultPayload.success) renderResults(resultPayload.data);
-      if (p.status === 'completed') {
+      if (p.status === 'completed' && p.report_ready) {
         document.getElementById('download-report').href = `/api/optimization/${currentSessionId}/report`;
         reportActions.classList.remove('hidden');
       }
@@ -239,6 +291,8 @@ async function refreshProgress() {
     if (activeView === 'session') await refreshCurrentSession();
   } catch {
     progressSummary.textContent = 'Progress update failed; retrying shortly.';
+  } finally {
+    progressRequestInFlight = false;
   }
 }
 
@@ -492,13 +546,143 @@ function renderUnderstanding(taskSpec) {
   understandingContent.append(grid);
 }
 
-function renderStepper(activeIndex) {
+function renderStepper(progressStages) {
   stepper.replaceChildren();
-  steps.forEach((step, index) => {
-    const item = document.createElement('span');
-    item.className = `stepper-item ${index <= activeIndex ? 'active' : ''}`;
-    item.textContent = `${index + 1}. ${step}`;
+  steps.forEach(([stage, label]) => {
+    const state = progressStages[stage] || 'pending';
+    const marker = state === 'completed' ? '✓' : state === 'running' ? '●' : state === 'failed' ? '!' : '○';
+    const item = document.createElement('li');
+    item.className = `stepper-item ${state}`;
+    item.textContent = `${marker} ${label}`;
+    item.setAttribute('aria-label', `${label}: ${state}`);
     stepper.append(item);
+  });
+}
+
+function setProgressMetrics(status) {
+  progressIteration.textContent = status ? `${status.current_iteration || 0} / ${status.max_iterations || 0}` : '—';
+  progressCandidates.textContent = status
+    ? `${status.active_candidate_count || 0} active · ${status.candidate_count || 0} total`
+    : '—';
+  progressModelCalls.textContent = status
+    ? `${status.llm_call_count || 0} / ${status.max_llm_calls ?? '—'}`
+    : '—';
+  progressBestQuality.textContent = status?.current_best_quality == null
+    ? '—'
+    : `${Math.round(Number(status.current_best_quality) * 100)}%`;
+  progressBestTokens.textContent = status?.current_best_prompt_token_count == null
+    ? (status?.token_count_error || '—')
+    : String(status.current_best_prompt_token_count);
+}
+
+function renderRateLimitState(status) {
+  const state = status.rate_limit_status;
+  if (!state) {
+    rateLimitAlert.classList.add('hidden');
+    rateLimitAlert.textContent = '';
+    return;
+  }
+  rateLimitAlert.classList.remove('hidden');
+  if (state === 'waiting' || status.status === 'paused_rate_limit') {
+    const deadline = status.rate_limit_retry_at ? Date.parse(status.rate_limit_retry_at) : NaN;
+    const remaining = Number.isFinite(deadline)
+      ? Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
+      : Number(status.rate_limit_retry_after || 0);
+    rateLimitAlert.textContent =
+      `! Rate limit reached\n${status.rate_limit_provider || 'Provider'} is temporarily rate limited.\n` +
+      `Retrying in ${remaining} seconds…\n` +
+      `Completed: Iteration ${status.current_iteration || 0} / ${status.max_iterations || 0}`;
+  } else if (state === 'retrying') {
+    rateLimitAlert.textContent = 'Retrying…';
+  } else if (state === 'cleared') {
+    rateLimitAlert.textContent = '✓ Rate limit cleared\nContinuing optimization.';
+  } else if (state === 'exhausted') {
+    rateLimitAlert.textContent = `! ${status.rate_limit_message || 'The provider is still rate limited.'}`;
+  } else {
+    rateLimitAlert.classList.add('hidden');
+  }
+}
+
+async function refreshProviderStatus(forceRefresh = false) {
+  if (providerCheckInFlight) return;
+  providerCheckInFlight = true;
+  const refreshButton = document.getElementById('refresh-provider-status');
+  refreshButton.disabled = true;
+  providerStatusMessage.textContent = forceRefresh ? 'Refreshing provider connections…' : 'Checking provider connections…';
+  try {
+    const query = forceRefresh ? '?force_refresh=true' : '';
+    const response = await fetch(`/api/providers/status${query}`);
+    const payload = await response.json();
+    if (!response.ok || !payload.success) {
+      throw new Error(payload.error?.message || 'Provider status request failed.');
+    }
+    renderProviderStatuses(payload.data);
+    providerStatusMessage.textContent = 'Provider health checks are complete. Working means a live provider request succeeded.';
+  } catch {
+    providerStatusList.replaceChildren();
+    providerStatusMessage.textContent = 'Could not load provider status. Retry when the server is available.';
+  } finally {
+    providerCheckInFlight = false;
+    refreshButton.disabled = false;
+  }
+}
+
+function renderProviderStatuses(statuses) {
+  const providers = [
+    ['optimizer', 'Gemini Optimizer'],
+    ['performer', 'Gemini Performer'],
+    ['judge', 'Groq Judge'],
+  ];
+  const warningStates = new Set([
+    'mock', 'not_verified', 'rate_limited', 'temporarily_unavailable', 'timeout', 'network_error',
+  ]);
+  providerStatusList.replaceChildren();
+  providers.forEach(([key, name]) => {
+    const details = statuses[key] || {};
+    const state = details.working
+      ? 'working'
+      : warningStates.has(details.status)
+        ? 'warning'
+        : 'failed';
+    const card = document.createElement('article');
+    card.className = 'provider-status-card';
+    card.dataset.state = state;
+    const heading = document.createElement('div');
+    heading.className = 'provider-status-heading';
+    const indicator = document.createElement('span');
+    indicator.className = 'provider-status-indicator';
+    indicator.setAttribute('aria-hidden', 'true');
+    const title = document.createElement('strong');
+    title.textContent = `${state === 'working' ? '✓' : state === 'failed' ? '✕' : '●'} ${name}`;
+    heading.append(indicator, title);
+    const configured = document.createElement('p');
+    configured.textContent = `Configured: ${details.configured ? 'Yes' : 'No'}`;
+    const model = document.createElement('p');
+    model.textContent = `Model: ${details.model || '—'}`;
+    const status = document.createElement('p');
+    status.className = 'provider-status-state';
+    status.textContent = state === 'working'
+      ? 'Working'
+      : details.status === 'mock'
+        ? 'Not verified (mock mode)'
+        : details.status === 'not_verified'
+          ? 'Configured, not verified'
+          : details.status === 'rate_limited'
+            ? 'Rate limited'
+            : details.status === 'temporarily_unavailable'
+              ? 'Temporarily unavailable'
+              : details.status === 'timeout' || details.status === 'network_error'
+              ? 'Temporarily unavailable'
+              : details.status === 'missing_credential'
+                ? 'Not configured'
+                : details.status || 'Provider test failed';
+    card.append(heading, configured, model, status);
+    if (details.message && state !== 'working') {
+      const message = document.createElement('p');
+      message.textContent = details.message;
+      card.append(message);
+    }
+    providerStatusList.append(card);
   });
 }
 
