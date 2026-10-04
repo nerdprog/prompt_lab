@@ -4,7 +4,7 @@ import os
 from typing import Any
 from xml.sax.saxutils import escape
 
-from reportlab.graphics.charts.lineplots import LinePlot
+from reportlab.graphics.charts.barcharts import VerticalBarChart
 from reportlab.graphics.shapes import Drawing
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
@@ -29,13 +29,180 @@ class ReportGenerator:
         safe = escape(str(text if text is not None else "—")).replace("\n", "<br/>")
         return Paragraph(safe, style)
 
+    @staticmethod
+    def _score_percent(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not numeric or numeric < 0:
+            return None
+        if numeric <= 1.0:
+            return numeric * 100.0
+        if numeric <= 100.0:
+            return numeric
+        return None
+
+    @staticmethod
+    def _score_label(value: Any) -> str:
+        percent = ReportGenerator._score_percent(value)
+        if percent is None:
+            return "—"
+        return f"{percent:.1f}%"
+
+    @staticmethod
+    def _preview_text(text: Any, limit: int = 220) -> str:
+        value = str(text if text is not None else "")
+        value = value.strip()
+        if len(value) <= limit:
+            return value
+        return value[: max(0, limit - 3)].rstrip() + "..."
+
+    @staticmethod
+    def _as_mapping(value: Any) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return value
+        if hasattr(value, "model_dump"):
+            try:
+                dumped = value.model_dump()
+                if isinstance(dumped, dict):
+                    return dumped
+            except Exception:
+                pass
+        if hasattr(value, "dict"):
+            try:
+                dumped = value.dict()
+                if isinstance(dumped, dict):
+                    return dumped
+            except Exception:
+                pass
+        return {}
+
+    @staticmethod
+    def _coerce_items(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+        if isinstance(value, list):
+            items: list[str] = []
+            for item in value:
+                if item is None:
+                    continue
+                text = str(item).strip()
+                if text:
+                    items.append(text)
+            return items
+        return [str(value)]
+
+    @staticmethod
+    def _dedupe(items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in items:
+            text = str(item).strip()
+            lowered = text.lower()
+            if not text or lowered in seen:
+                continue
+            seen.add(lowered)
+            result.append(text)
+        return result
+
+    @staticmethod
+    def _details_for_task(task_spec: dict[str, Any]) -> list[tuple[str, str]]:
+        rows: list[tuple[str, str]] = []
+        goal = (task_spec or {}).get("primary_intent")
+        if goal:
+            rows.append(("Goal", str(goal)))
+        audience = (task_spec or {}).get("audience")
+        if audience:
+            rows.append(("Audience", str(audience)))
+        output_format = (task_spec or {}).get("output_format")
+        if output_format:
+            rows.append(("Expected output", str(output_format)))
+        requirements = ReportGenerator._dedupe((task_spec or {}).get("explicit_requirements", []) + (task_spec or {}).get("inferred_requirements", []))
+        if requirements:
+            rows.append(("Key requirements", "• " + "\n• ".join(requirements)))
+        constraints = ReportGenerator._dedupe((task_spec or {}).get("constraints", []))
+        if constraints:
+            rows.append(("Constraints", "• " + "\n• ".join(constraints)))
+        ambiguities = ReportGenerator._dedupe((task_spec or {}).get("ambiguities", []))
+        if ambiguities:
+            rows.append(("Important considerations", "• " + "\n• ".join(ambiguities)))
+        return rows
+
+    @staticmethod
+    def _collect_feedback_texts(
+        candidate: dict[str, Any],
+        field_name: str,
+        evaluations: list[dict[str, Any]] | None = None,
+    ) -> list[str]:
+        texts: list[str] = []
+        for evaluation in candidate.get("final_evaluations", []) or []:
+            feedback = evaluation.get("feedback") or {}
+            texts.extend(ReportGenerator._coerce_items(feedback.get(field_name)))
+        candidate_id = candidate.get("candidate_id")
+        for evaluation in evaluations or []:
+            if evaluation.get("candidate_id") == candidate_id:
+                texts.extend(ReportGenerator._coerce_items(evaluation.get(field_name)))
+        return ReportGenerator._dedupe(texts)
+
+    @staticmethod
+    def _count_evaluated_candidates(session: dict[str, Any]) -> int:
+        candidate_ids = {
+            evaluation.get("candidate_id")
+            for evaluation in session.get("evaluations") or []
+            if evaluation.get("status") in {"success", "mock"}
+            and evaluation.get("candidate_id")
+        }
+        return len(candidate_ids)
+
+    @staticmethod
+    def _build_summary_sentence(
+        top_candidate: dict[str, Any] | None,
+        evaluations: list[dict[str, Any]] | None = None,
+    ) -> str:
+        if top_candidate:
+            feedback = (
+                ReportGenerator._collect_feedback_texts(top_candidate, "strengths", evaluations)
+                or ReportGenerator._collect_feedback_texts(top_candidate, "evidence", evaluations)
+            )
+            if feedback:
+                return f"Final evaluation feedback for the top-ranked prompt highlighted: {feedback[0]}"
+        return "No specific improvement evidence was recorded for the best candidate."
+
+    @staticmethod
+    def _iter_score_points(session: dict[str, Any]) -> list[tuple[str, float]]:
+        points: list[tuple[str, float]] = []
+        baseline = (session.get("final_evaluation") or {}).get("baseline") or {}
+        baseline_score = baseline.get("score")
+        if baseline_score is not None:
+            points.append(("Original", float(baseline_score)))
+        iterations = session.get("iterations") or []
+        for index, iteration in enumerate(iterations, start=1):
+            value = iteration.get("best_score")
+            if value is not None:
+                try:
+                    points.append((f"Iteration {index}", float(value)))
+                except (TypeError, ValueError):
+                    continue
+        if not points:
+            best = session.get("current_best_quality")
+            if best is not None:
+                points.append(("Original", float(best)))
+        return points
+
     def _page_decor(self, canvas: Any, doc: Any) -> None:
         canvas.saveState()
         canvas.setStrokeColor(colors.HexColor("#D7D7D2"))
         canvas.line(40, 34, letter[0] - 40, 34)
         canvas.setFont("Helvetica", 8)
         canvas.setFillColor(colors.HexColor("#555555"))
-        canvas.drawString(40, 22, "PromptLab — in-memory optimization session report")
+        canvas.drawString(40, 22, "PromptLab — Prompt Optimization Report")
         canvas.drawRightString(letter[0] - 40, 22, f"Page {doc.page}")
         canvas.restoreState()
 
@@ -47,8 +214,19 @@ class ReportGenerator:
     def _add_key_values(self, story: list[Any], rows: list[tuple[str, Any]], styles: Any) -> None:
         if not rows:
             return
-        data = [[self._p(key, styles["Small"]), self._p(value, styles["BodyText"])] for key, value in rows]
-        table = LongTable(data, colWidths=[150, 370], repeatRows=0, splitByRow=1, splitInRow=1)
+        data: list[list[Any]] = []
+        for key, value in rows:
+            if value is None:
+                continue
+            if isinstance(value, (list, tuple)) and not value:
+                continue
+            data.append([
+                self._p(key, styles["Small"]),
+                self._p(value if not isinstance(value, (list, tuple)) else "• " + "\n• ".join(str(item) for item in value), styles["BodyText"]),
+            ])
+        if not data:
+            return
+        table = LongTable(data, colWidths=[165, 345], repeatRows=0, splitByRow=1, splitInRow=1)
         table.setStyle(TableStyle([
             ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#D4D4D0")),
             ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F0F0EE")),
@@ -62,212 +240,215 @@ class ReportGenerator:
 
     def create_report(self, session: dict[str, Any]) -> str:
         os.makedirs(self.output_dir, exist_ok=True)
-        filename = os.path.join(self.output_dir, f"{session['session_id']}-report.pdf")
+        session_id = str(session.get("session_id") or "session")
+        filename = os.path.join(self.output_dir, f"{session_id}-report.pdf")
+
         styles = getSampleStyleSheet()
         styles.add(ParagraphStyle(
             name="CoverTitle", parent=styles["Title"], fontName="Helvetica-Bold",
-            fontSize=24, leading=30, alignment=TA_CENTER, textColor=colors.HexColor("#202124"),
+            fontSize=26, leading=32, alignment=TA_CENTER, textColor=colors.HexColor("#202124"),
         ))
         styles.add(ParagraphStyle(
-            name="Small", parent=styles["BodyText"], fontSize=8, leading=10,
+            name="SectionTitle", parent=styles["Heading1"], fontName="Helvetica-Bold",
+            fontSize=16, leading=20, spaceAfter=8, textColor=colors.HexColor("#202124"),
         ))
         styles.add(ParagraphStyle(
-            name="Mono", parent=styles["Code"], fontName="Courier", fontSize=8, leading=11,
+            name="PromptBox", parent=styles["BodyText"], fontName="Helvetica",
+            fontSize=9, leading=12, borderColor=colors.HexColor("#C7C7C3"),
+            borderWidth=1, borderPadding=8, backColor=colors.HexColor("#F5F5F4"),
+        ))
+        styles.add(ParagraphStyle(
+            name="Small", parent=styles["BodyText"], fontSize=8.5, leading=11,
         ))
 
-        story: list[Any] = [
-            Spacer(1, 110),
+        story: list[Any] = []
+        task_spec = self._as_mapping(session.get("task_spec"))
+        final = self._as_mapping(session.get("final_evaluation"))
+        top3 = final.get("top3") or final.get("final_ranking") or []
+        top_candidate = top3[0] if top3 else {}
+        baseline = self._as_mapping(final.get("baseline"))
+        original_quality = self._score_percent(baseline.get("score"))
+        best_quality = self._score_percent(top_candidate.get("score"))
+        improvement_points = None
+        if original_quality is not None and best_quality is not None:
+            improvement_points = best_quality - original_quality
+
+        session_evaluations = session.get("evaluations") or []
+        summary_sentence = self._build_summary_sentence(top_candidate, session_evaluations)
+        original_prompt = session.get("original_prompt") or ""
+        best_prompt = (top_candidate.get("prompt_text") or original_prompt).strip()
+
+        story.extend([
+            Spacer(1, 36),
             Paragraph("PromptLab", styles["CoverTitle"]),
             Paragraph("Prompt Optimization Report", styles["Heading1"]),
-            Spacer(1, 24),
+            Spacer(1, 20),
+            Paragraph("1. EXECUTIVE SUMMARY", styles["SectionTitle"]),
+            self._p(summary_sentence, styles["BodyText"]),
+            Spacer(1, 12),
+            Paragraph("Original Prompt", styles["Heading2"]),
+            self._p(self._preview_text(original_prompt, 260), styles["BodyText"]),
+            Spacer(1, 8),
+            Paragraph("Best Optimized Prompt", styles["Heading2"]),
+            self._p(self._preview_text(best_prompt, 260), styles["BodyText"]),
+            Spacer(1, 12),
+        ])
+        summary_rows = [
+            ("Original Quality", self._score_label(baseline.get("score"))),
+            ("Best Optimized Quality", self._score_label(top_candidate.get("score"))),
+            ("Improvement", f"+{improvement_points:.1f} points" if improvement_points is not None else "—"),
+            ("Iterations", str(len(session.get("iterations") or []))),
+            ("Candidates Evaluated", str(self._count_evaluated_candidates(session))),
+            ("Model Calls", str(session.get("llm_call_count") or 0)),
         ]
-        self._add_key_values(story, [
-            ("Session ID", session.get("session_id")),
-            ("Created", session.get("created_at")),
-            ("Completed", session.get("completed_at")),
-            ("Status", session.get("status")),
-            ("Stop reason", session.get("stop_reason")),
-            ("Configuration", session.get("configuration", {})),
-        ], styles)
+        self._add_key_values(story, summary_rows, styles)
         story.append(PageBreak())
 
-        self._add_section(story, "1. Original Prompt and Context", styles)
-        self._add_key_values(story, [
-            ("Original prompt", session.get("original_prompt")),
-            ("Additional context", session.get("optional_context")),
-            ("Preferences", session.get("preferences")),
-        ], styles)
+        self._add_section(story, "2. TASK UNDERSTANDING", styles)
+        rows = self._details_for_task(task_spec)
+        if rows:
+            detail_table = LongTable(
+                [[self._p(title, styles["Small"]), self._p(value, styles["BodyText"])] for title, value in rows],
+                colWidths=[155, 355], repeatRows=0, splitByRow=1, splitInRow=1,
+            )
+            detail_table.setStyle(TableStyle([
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#D4D4D0")),
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F0F0EE")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]))
+            story.append(detail_table)
+        else:
+            story.append(Paragraph("No task understanding details were recorded in the session.", styles["BodyText"]))
 
-        task = session.get("task_spec") or {}
-        self._add_section(story, "2. Confirmed TaskIntent", styles)
-        self._add_key_values(story, [(key, value) for key, value in task.items()], styles)
+        self._add_section(story, "3. EVALUATION RUBRIC", styles)
+        story.append(Paragraph("PromptLab evaluates candidate prompts by comparing the quality of the responses they produce against this task-specific rubric.", styles["BodyText"]))
+        rubric = self._as_mapping(session.get("rubric"))
+        criteria = rubric.get("criteria") or []
+        if criteria:
+            rubric_rows = [[self._p("Criterion", styles["Small"]), self._p("Weight", styles["Small"]), self._p("What it measures", styles["Small"])] ]
+            for item in criteria:
+                weight_value = item.get("weight")
+                rubric_rows.append([
+                    self._p(item.get("criterion") or "—", styles["BodyText"]),
+                    self._p(f"{float(weight_value) * 100:.0f}%" if weight_value is not None else "—", styles["BodyText"]),
+                    self._p(item.get("description") or item.get("scoring_scale") or "—", styles["BodyText"]),
+                ])
+            rubric_table = LongTable(rubric_rows, colWidths=[170, 70, 290], repeatRows=1, splitByRow=1, splitInRow=1)
+            rubric_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#333333")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#D4D4D0")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]))
+            story.append(rubric_table)
+        else:
+            story.append(Paragraph("No rubric was recorded for this session.", styles["BodyText"]))
 
-        rubric = session.get("rubric") or {}
-        self._add_section(story, "3. Task-Specific Rubric", styles)
-        rubric_rows = [[self._p("Criterion", styles["Small"]), self._p("Description", styles["Small"]),
-                        self._p("Weight", styles["Small"]), self._p("Scoring guidance", styles["Small"])]]
-        for item in rubric.get("criteria", []):
-            rubric_rows.append([
-                self._p(item.get("criterion"), styles["Small"]),
-                self._p(item.get("description"), styles["Small"]),
-                self._p(item.get("weight"), styles["Small"]),
-                self._p(item.get("scoring_scale"), styles["Small"]),
-            ])
-        rubric_table = LongTable(
-            rubric_rows, colWidths=[100, 215, 45, 160], repeatRows=1, splitByRow=1, splitInRow=1
-        )
-        rubric_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#333333")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#D4D4D0")),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ]))
-        story.append(rubric_table)
-
-        self._add_section(story, "4. Samples", styles)
-        for sample in session.get("samples", []):
-            self._add_key_values(story, [
-                ("Sample ID / origin", f"{sample.get('sample_id')} / {sample.get('origin')}"),
-                ("Content", sample.get("content")),
-            ], styles)
-
-        candidates = session.get("candidates", [])
-        by_id = {item.get("candidate_id"): item for item in candidates}
-        self._add_section(story, "5. Candidate Pool and Lineage", styles)
-        for candidate in candidates:
-            parent = by_id.get(candidate.get("parent_id"), {})
-            self._add_key_values(story, [
-                ("Candidate / status / source", f"{candidate.get('candidate_id')} / {candidate.get('status')} / {candidate.get('source')}"),
-                ("Parent / generation", f"{candidate.get('parent_id') or 'original'} / {candidate.get('generation')}"),
-                ("Generation reason", candidate.get("generation_reason")),
-                ("Preserved requirements", candidate.get("preserved_requirements", [])),
-                ("New assumptions", candidate.get("new_assumptions", [])),
-                ("Removed assumptions", candidate.get("removed_assumptions", [])),
-                ("Parent prompt", parent.get("prompt_text") if parent else "—"),
-                ("Complete candidate prompt", candidate.get("prompt_text")),
-            ], styles)
-
-        evaluations = session.get("evaluations", [])
-        self._add_section(story, "6. Optimization Evaluation History", styles)
-        for evaluation in evaluations:
-            self._add_key_values(story, [
-                ("Evaluation / iteration", f"{evaluation.get('evaluation_id')} / {evaluation.get('iteration')}"),
-                ("Candidate / sample / status", f"{evaluation.get('candidate_id')} / {evaluation.get('sample_id')} / {evaluation.get('status')}"),
-                ("Evaluation source", evaluation.get("evaluation_source")),
-                ("Performer response", evaluation.get("response")),
-                ("Authoritative reward", evaluation.get("authoritative_score")),
-                ("Judge informational score", evaluation.get("judge_overall_score")),
-                ("Criterion scores", evaluation.get("criterion_scores", [])),
-                ("Strengths", evaluation.get("strengths", [])),
-                ("Weaknesses", evaluation.get("weaknesses", [])),
-                ("Evidence", evaluation.get("evidence", [])),
-                ("Root cause", evaluation.get("root_cause", [])),
-                ("Improvement suggestions", evaluation.get("improvement_suggestion", [])),
-                ("Intent fidelity / unsupported assumptions", f"{evaluation.get('intent_fidelity')} / {evaluation.get('unsupported_assumptions')}"),
-                ("Failure", evaluation.get("failure_reason") or evaluation.get("error")),
-            ], styles)
-
-        self._add_section(story, "7. Iteration and UCB History", styles)
-        for iteration in session.get("iterations", []):
-            self._add_key_values(story, [
-                ("Iteration / sample", f"{iteration.get('iteration')} / {iteration.get('sample_id')}"),
-                ("Active candidates", iteration.get("active_candidates")),
-                ("Evaluated candidates", iteration.get("evaluated_candidates")),
-                ("Parents / children", f"{iteration.get('parent_candidates')} / {iteration.get('edited_candidates')}"),
-                ("Best score", iteration.get("best_score")),
-                ("UCB decisions", iteration.get("ucb_decisions")),
-            ], styles)
-        for history in session.get("ucb_history", []):
-            self._add_key_values(story, [
-                ("UCB history iteration", history.get("iteration")),
-                ("Total pulls before round", history.get("total_pulls_before_round")),
-                ("Selected candidate IDs", history.get("selected_candidate_ids")),
-                ("Selection decisions", history.get("decisions")),
-            ], styles)
-
-        self._add_section(story, "8. Session Insight Store", styles)
-        for insight in session.get("insights", []):
-            self._add_key_values(story, [(key, value) for key, value in insight.items()], styles)
-        if not session.get("insights"):
-            story.append(self._p("No insights were recorded.", styles["BodyText"]))
-
-        best_scores = [
-            (item.get("iteration"), item.get("best_score"))
-            for item in session.get("iterations", [])
-            if item.get("best_score") is not None
-        ]
-        if len(best_scores) >= 2:
-            self._add_section(story, "9. Quality by Iteration", styles)
-            chart = Drawing(480, 230)
-            plot = LinePlot()
-            plot.x = 45
-            plot.y = 35
-            plot.width = 390
-            plot.height = 165
-            plot.data = [best_scores]
-            plot.xValueAxis.valueMin = min(item[0] for item in best_scores)
-            plot.xValueAxis.valueMax = max(item[0] for item in best_scores)
-            plot.yValueAxis.valueMin = 0
-            plot.yValueAxis.valueMax = 1
-            plot.lines[0].strokeColor = colors.HexColor("#333333")
-            plot.lines[0].strokeWidth = 1.5
-            chart.add(plot)
+        self._add_section(story, "4. OPTIMIZATION JOURNEY", styles)
+        score_points = self._iter_score_points(session)
+        if score_points:
+            if score_points[0][0] != "Original":
+                score_points = [("Original", score_points[0][1])] + score_points
+            score_labels = [label for label, _ in score_points]
+            score_values = [self._score_percent(value) or 0.0 for _, value in score_points]
+            chart = Drawing(500, 210)
+            bar = VerticalBarChart()
+            bar.x = 40
+            bar.y = 35
+            bar.width = 430
+            bar.height = 140
+            bar.data = [score_values]
+            bar.categoryAxis.categoryNames = score_labels
+            bar.categoryAxis.labels.dx = 0
+            bar.categoryAxis.labels.dy = -3
+            bar.categoryAxis.labels.fontName = 'Helvetica'
+            bar.categoryAxis.labels.fontSize = 8
+            bar.valueAxis.valueMin = 0
+            bar.valueAxis.valueMax = max(100.0, max(score_values) * 1.15)
+            bar.valueAxis.valueStep = 10
+            bar.barLabelFormat = '%d%%'
+            bar.valueAxis.labelTextFormat = '%d%%'
+            chart.add(bar)
             story.append(chart)
+        else:
+            story.append(Paragraph("Quality progression could not be plotted because insufficient evaluation data was recorded.", styles["BodyText"]))
 
-        final = session.get("final_evaluation") or {}
-        self._add_section(story, "10. Final Evaluation and Original Baseline", styles)
-        baseline = final.get("baseline") or {}
-        self._add_key_values(story, [
-            ("Stop reason", final.get("stop_reason") or session.get("stop_reason")),
-            ("Baseline prompt", baseline.get("prompt_text", session.get("original_prompt"))),
-            ("Baseline mean score", baseline.get("score")),
-        ], styles)
-        for evaluation in baseline.get("evaluations", []):
-            self._add_key_values(story, [
-                ("Baseline sample / score", f"{evaluation.get('sample_id')} / {evaluation.get('authoritative_score')}"),
-                ("Baseline response", evaluation.get("response")),
-                ("Baseline criterion scores", evaluation.get("criterion_scores", [])),
-                ("Baseline feedback", evaluation.get("feedback", {})),
-            ], styles)
-        for rank, item in enumerate(final.get("final_ranking", []), start=1):
-            self._add_key_values(story, [
-                ("Final rank / candidate / score", f"{rank} / {item.get('candidate_id')} / {item.get('score')}"),
-                ("Final prompt", item.get("prompt_text")),
-                ("Lineage", f"{item.get('parent_id') or 'original'} / generation {item.get('generation')}"),
-            ], styles)
-            for evaluation in item.get("final_evaluations", []):
-                self._add_key_values(story, [
-                    ("Final sample / score", f"{evaluation.get('sample_id')} / {evaluation.get('authoritative_score')}"),
-                    ("Final response", evaluation.get("response")),
-                    ("Final criterion scores", evaluation.get("criterion_scores", [])),
-                    ("Final feedback", evaluation.get("feedback", {})),
-                ], styles)
+        progression = []
+        if baseline.get("score") is not None:
+            progression.append(("Original", baseline.get("score")))
+        for index, iteration in enumerate(session.get("iterations") or [], start=1):
+            value = iteration.get("best_score")
+            if value is not None:
+                progression.append((f"Iteration {index}", value))
+        if progression:
+            for label, value in progression:
+                story.append(Paragraph(f"{label}: {self._score_label(value)}", styles["BodyText"]))
+        else:
+            story.append(Paragraph("No iteration scores were recorded for this session.", styles["BodyText"]))
 
-        self._add_section(story, "11. Top 3 Prompts", styles)
-        for rank, item in enumerate(final.get("top3", []), start=1):
-            self._add_key_values(story, [
-                ("Rank / candidate / score", f"{rank} / {item.get('candidate_id')} / {item.get('score')}"),
-                ("Parent / generation", f"{item.get('parent_id') or 'original'} / {item.get('generation')}"),
-                ("Complete prompt", item.get("prompt_text")),
-            ], styles)
+        improvement_bullets: list[str] = []
+        for candidate in top3:
+            improvement_bullets.extend(self._collect_feedback_texts(candidate, "strengths", session_evaluations))
+        if not improvement_bullets:
+            for candidate in top3:
+                improvement_bullets.extend(self._collect_feedback_texts(candidate, "evidence", session_evaluations))
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("Key improvements", styles["Heading2"]))
+        distinct_improvements = self._dedupe(improvement_bullets)[:3]
+        if distinct_improvements:
+            for idx, point in enumerate(distinct_improvements, start=1):
+                story.append(self._p(f"{idx}. {point}", styles["BodyText"]))
+        else:
+            story.append(self._p("No specific improvement evidence was recorded for the top prompts.", styles["BodyText"]))
 
-        self._add_section(story, "12. Limitations and Methodology", styles)
-        limitations = [
-            "LLM judge scores are estimates, not objective ground truth.",
-            "Subjective tasks may not have a uniquely correct response.",
-            "Optimization is bounded by the recorded call and iteration budgets.",
-            "UCB is a candidate-selection strategy, not proof of global optimality.",
-            "Mock-source evaluations are explicitly marked and are not live provider evaluations.",
-        ]
-        for limitation in limitations:
-            story.append(self._p(f"- {limitation}", styles["BodyText"]))
+        self._add_section(story, "5. FINAL OPTIMIZED PROMPT", styles)
+        if best_prompt:
+            story.append(Paragraph(best_prompt, styles["PromptBox"]))
+        else:
+            story.append(Paragraph("No final optimized prompt was recorded for this session.", styles["BodyText"]))
         story.append(Spacer(1, 8))
-        self._add_key_values(story, [
-            ("Model configuration", session.get("model_configuration", {})),
-            ("Call count / budget", f"{session.get('llm_call_count')} / {session.get('configuration', {}).get('max_llm_calls')}"),
-            ("Session status / reason", f"{session.get('status')} / {session.get('stop_reason')}"),
-            ("Errors", session.get("errors", [])),
-        ], styles)
+        meta_rows = [
+            ("Final Quality", self._score_label(top_candidate.get("score"))),
+            ("Original Quality", self._score_label(baseline.get("score"))),
+            ("Improvement", f"+{improvement_points:.1f} points / +{(improvement_points * 100.0 / original_quality):.1f}%" if improvement_points is not None and original_quality not in (None, 0) else "—"),
+        ]
+        if session.get("current_best_prompt_token_count") is not None:
+            meta_rows.append(("Prompt Length", f"{int(session['current_best_prompt_token_count'])} tokens"))
+        self._add_key_values(story, meta_rows, styles)
+        story.append(Spacer(1, 8))
+        story.append(Paragraph("WHY THIS PROMPT IS BETTER", styles["Heading2"]))
+        why = self._collect_feedback_texts(top_candidate, "strengths", session_evaluations)
+        if not why:
+            why = self._collect_feedback_texts(top_candidate, "evidence", session_evaluations)
+        if not why:
+            why = ["No specific improvement evidence was recorded for this candidate."]
+        for item in self._dedupe(why)[:4]:
+            story.append(self._p(f"• {item}", styles["BodyText"]))
+
+        self._add_section(story, "6. TOP 3 OPTIMIZED PROMPTS", styles)
+        if not top3:
+            story.append(Paragraph("No final ranked prompts were recorded for this session.", styles["BodyText"]))
+        for rank, item in enumerate(top3[:3], start=1):
+            label = "Best Overall" if rank == 1 else "Alternative"
+            story.append(Paragraph(f"#{rank} — {label}", styles["Heading2"]))
+            story.append(Paragraph(f"Quality: {self._score_label(item.get('score'))}", styles["BodyText"]))
+            story.append(Paragraph("Prompt:", styles["BodyText"]))
+            story.append(self._p(item.get("prompt_text") or "—", styles["PromptBox"]))
+            why_rank = self._collect_feedback_texts(item, "strengths", session_evaluations) or self._collect_feedback_texts(item, "evidence", session_evaluations)
+            if why_rank:
+                story.append(Paragraph("Why it performed well:", styles["BodyText"]))
+                story.append(self._p(self._dedupe(why_rank)[0], styles["BodyText"]))
+            else:
+                story.append(self._p("Why it performed well: No specific improvement evidence was recorded for this candidate.", styles["BodyText"]))
+            weaknesses = self._collect_feedback_texts(item, "weaknesses", session_evaluations)
+            if weaknesses:
+                story.append(Paragraph("Remaining weakness:", styles["BodyText"]))
+                story.append(self._p(weaknesses[0], styles["BodyText"]))
+            story.append(Spacer(1, 12))
 
         doc = SimpleDocTemplate(
             filename,
