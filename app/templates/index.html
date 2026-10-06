@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -13,117 +13,201 @@
           <div class="brand-mark">P</div>
           <div>
             <div class="brand-name">PromptLab</div>
-            <div class="brand-tagline">Improve prompts by testing what they actually produce.</div>
+            <div class="brand-tagline">
+              Improve prompts by testing what they actually produce.
+            </div>
           </div>
         </div>
         <nav class="nav">
-          <button class="nav-item active" type="button" data-view="optimize">Optimize</button>
-          <button class="nav-item" type="button" data-view="session">Current Session</button>
-          <button class="nav-item" type="button" data-view="about">About</button>
+          <button class="nav-item active" type="button" data-view="optimize">
+            Optimize
+          </button>
+          <button class="nav-item" type="button" data-view="session">
+            Current Session
+          </button>
+          <button class="nav-item" type="button" data-view="about">
+            About
+          </button>
         </nav>
       </header>
 
       <main class="workspace">
         <div id="optimize-view" class="app-view">
-        <section class="panel provider-panel" aria-labelledby="provider-heading">
-          <div class="section-header">
-            <h2 id="provider-heading">API Connection Status</h2>
-            <button id="refresh-provider-status" class="secondary-button" type="button">Refresh API Status</button>
-          </div>
-          <p id="provider-status-message" class="muted-copy" role="status" aria-live="polite">Checking provider connections…</p>
-          <div id="provider-status-list" class="provider-status-list"></div>
-        </section>
-
-        <section class="panel">
-          <div class="section-header">
-            <h2>Original Prompt</h2>
-            <span id="char-count">0 characters</span>
-          </div>
-          <textarea id="prompt-input" placeholder="Enter the prompt you want to optimize..."></textarea>
-          <div class="meta-row">
-            <label class="field">
-              <span>Additional context (optional)</span>
-              <textarea id="context-input" rows="2" placeholder="Any extra context that should influence the task understanding..."></textarea>
-            </label>
-          </div>
-          <div class="meta-row two-col">
-            <label class="field">
-              <span>Preferences (optional)</span>
-              <input id="preferences-input" type="text" placeholder="Tone, output style, urgency..." />
-            </label>
-            <label class="field">
-              <span>Active candidates</span>
-              <input id="active-candidates" type="number" min="3" max="10" value="6" />
-            </label>
-          </div>
-          <details class="advanced-settings">
-            <summary>Advanced settings</summary>
-            <div class="advanced-grid">
-              <label class="field"><span>Maximum iterations</span><input id="max-iterations" type="number" min="1" max="10" value="5" /></label>
-              <label class="field"><span>Edited candidates per round</span><input id="edited-candidates" type="number" min="1" max="6" value="3" /></label>
-              <label class="field"><span>Maximum model calls</span><input id="max-llm-calls" type="number" min="1" max="500" value="200" /></label>
+          <section
+            class="panel provider-panel"
+            aria-labelledby="provider-heading"
+          >
+            <div class="section-header">
+              <h2 id="provider-heading">API Connection Status</h2>
+              <button
+                id="refresh-provider-status"
+                class="secondary-button"
+                type="button"
+              >
+                Refresh API Status
+              </button>
             </div>
-          </details>
-          <div class="actions-row">
-            <button id="optimize-button" class="primary-button">Optimize Prompt</button>
-            <button id="reset-button" class="secondary-button">Reset</button>
-          </div>
-          <div id="validation-message" class="status-message hidden"></div>
-        </section>
+            <p
+              id="provider-status-message"
+              class="muted-copy"
+              role="status"
+              aria-live="polite"
+            >
+              Checking provider connections…
+            </p>
+            <div id="provider-status-list" class="provider-status-list"></div>
+          </section>
 
-        <section id="understanding-panel" class="panel hidden">
-          <div class="section-header">
-            <h2>Here's what we understood</h2>
-          </div>
-          <div id="understanding-content"></div>
-          <label id="intent-editor-wrap" class="field hidden">
-            <span>Edit TaskIntent JSON</span>
-            <textarea id="intent-editor" rows="12"></textarea>
-          </label>
-          <div class="actions-row compact-actions">
-            <button id="confirm-understanding" class="primary-button">Confirm &amp; Optimize</button>
-            <button id="edit-understanding" class="secondary-button">Edit Understanding</button>
-          </div>
-        </section>
+          <section class="panel">
+            <div class="section-header">
+              <h2>Original Prompt</h2>
+              <span id="char-count">0 characters</span>
+            </div>
+            <textarea
+              id="prompt-input"
+              placeholder="Enter the prompt you want to optimize..."
+            ></textarea>
+            <div class="meta-row">
+              <label class="field">
+                <span>Additional context (optional)</span>
+                <textarea
+                  id="context-input"
+                  rows="2"
+                  placeholder="Any extra context that should influence the task understanding..."
+                ></textarea>
+              </label>
+            </div>
+            <div class="meta-row two-col">
+              <label class="field">
+                <span>Preferences (optional)</span>
+                <input
+                  id="preferences-input"
+                  type="text"
+                  placeholder="Tone, output style, urgency..."
+                />
+              </label>
+              <label class="field">
+                <span>Active candidates</span>
+                <input id="active-candidates" type="number" min="3" max="10" />
+              </label>
+            </div>
+            <details class="advanced-settings">
+              <summary>Advanced settings</summary>
+              <div class="advanced-grid">
+                <label class="field"
+                  ><span>Maximum iterations</span
+                  ><input id="max-iterations" type="number" min="1" max="10"
+                /></label>
+                <label class="field"
+                  ><span>Edited candidates per round</span
+                  ><input id="edited-candidates" type="number" min="1" max="6"
+                /></label>
+                <label class="field"
+                  ><span>Maximum model calls</span
+                  ><input id="max-llm-calls" type="number" min="1" max="500"
+                /></label>
+              </div>
+            </details>
+            <div class="actions-row">
+              <button id="optimize-button" class="primary-button">
+                Optimize Prompt
+              </button>
+              <button id="reset-button" class="secondary-button">Reset</button>
+            </div>
+            <div id="validation-message" class="status-message hidden"></div>
+          </section>
 
-        <section id="progress-panel" class="panel hidden">
-          <div class="section-header">
-            <h2>Optimization Progress</h2>
-          </div>
-          <ol class="stepper" id="stepper" aria-label="Optimization stages"></ol>
-          <div class="progress-summary" id="progress-summary"></div>
-          <div class="progress-metrics" aria-live="polite">
-            <div class="info-box"><strong>Iteration</strong><span id="progress-iteration">—</span></div>
-            <div class="info-box"><strong>Candidates</strong><span id="progress-candidates">—</span></div>
-            <div class="info-box"><strong>Model calls</strong><span id="progress-model-calls">—</span></div>
-            <div class="info-box"><strong>Best quality</strong><span id="progress-best-quality">—</span></div>
-            <div class="info-box"><strong>Best prompt tokens</strong><span id="progress-best-tokens">—</span></div>
-          </div>
-          <div id="rate-limit-alert" class="rate-limit-alert hidden" role="status" aria-live="polite"></div>
-          <div class="actions-row">
-            <button id="cancel-optimization" class="secondary-button">Cancel optimization</button>
-          </div>
-        </section>
+          <section id="understanding-panel" class="panel hidden">
+            <div class="section-header">
+              <h2>Here's what we understood</h2>
+            </div>
+            <div id="understanding-content"></div>
+            <label id="intent-editor-wrap" class="field hidden">
+              <span>Edit TaskIntent JSON</span>
+              <textarea id="intent-editor" rows="12"></textarea>
+            </label>
+            <div class="actions-row compact-actions">
+              <button id="confirm-understanding" class="primary-button">
+                Confirm &amp; Optimize
+              </button>
+              <button id="edit-understanding" class="secondary-button">
+                Edit Understanding
+              </button>
+            </div>
+          </section>
 
-        <section id="results-panel" class="panel hidden">
-          <div class="section-header">
-            <h2>Top 3 Optimized Prompts</h2>
-          </div>
-          <div id="results-content"></div>
-          <div id="report-actions" class="actions-row hidden">
-            <a id="download-report" class="primary-button" href="#">Download PDF report</a>
-          </div>
-        </section>
+          <section id="progress-panel" class="panel hidden">
+            <div class="section-header">
+              <h2>Optimization Progress</h2>
+            </div>
+            <ol
+              class="stepper"
+              id="stepper"
+              aria-label="Optimization stages"
+            ></ol>
+            <div class="progress-summary" id="progress-summary"></div>
+            <div class="progress-metrics" aria-live="polite">
+              <div class="info-box">
+                <strong>Iteration</strong><span id="progress-iteration">—</span>
+              </div>
+              <div class="info-box">
+                <strong>Candidates</strong
+                ><span id="progress-candidates">—</span>
+              </div>
+              <div class="info-box">
+                <strong>Model calls</strong
+                ><span id="progress-model-calls">—</span>
+              </div>
+              <div class="info-box">
+                <strong>Best quality</strong
+                ><span id="progress-best-quality">—</span>
+              </div>
+              <div class="info-box">
+                <strong>Best prompt tokens</strong
+                ><span id="progress-best-tokens">—</span>
+              </div>
+            </div>
+            <div
+              id="rate-limit-alert"
+              class="rate-limit-alert hidden"
+              role="status"
+              aria-live="polite"
+            ></div>
+            <div class="actions-row">
+              <button id="cancel-optimization" class="secondary-button">
+                Cancel optimization
+              </button>
+            </div>
+          </section>
+
+          <section id="results-panel" class="panel hidden">
+            <div class="section-header">
+              <h2>Top 3 Optimized Prompts</h2>
+            </div>
+            <div id="results-content"></div>
+            <div id="report-actions" class="actions-row hidden">
+              <a id="download-report" class="primary-button" href="#"
+                >Download PDF report</a
+              >
+            </div>
+          </section>
         </div>
 
         <section id="session-view" class="app-view hidden">
           <div class="panel">
             <div class="section-header">
               <h2>Current Session</h2>
-              <button id="refresh-session" class="secondary-button" type="button">Refresh</button>
+              <button
+                id="refresh-session"
+                class="secondary-button"
+                type="button"
+              >
+                Refresh
+              </button>
             </div>
             <p id="session-empty" class="muted-copy">
-              No current session yet. Start an optimization to see its prompt, TaskIntent, rubric, candidates, evaluations, and progress here.
+              No current session yet. Start an optimization to see its prompt,
+              TaskIntent, rubric, candidates, evaluations, and progress here.
             </p>
             <div id="session-content" class="hidden">
               <div id="session-summary" class="understanding-grid"></div>
@@ -156,7 +240,9 @@
                 <div id="session-insights"></div>
               </section>
               <div id="session-report-actions" class="actions-row hidden">
-                <a id="session-download-report" class="primary-button" href="#">Download PDF report</a>
+                <a id="session-download-report" class="primary-button" href="#"
+                  >Download PDF report</a
+                >
               </div>
             </div>
           </div>
@@ -165,40 +251,78 @@
         <section id="about-view" class="app-view hidden">
           <div class="panel about-panel">
             <h2>About PromptLab</h2>
-            <p>PromptLab tests candidate prompts by running them through a configured Performer and evaluating the resulting answers against the task and rubric.</p>
+            <p>
+              PromptLab tests candidate prompts by running them through a
+              configured Performer and evaluating the resulting answers against
+              the task and rubric.
+            </p>
             <div class="about-grid">
               <article class="info-box">
                 <h3>Gemini Optimizer</h3>
-                <p>Generates initial prompt candidates and creates improved child prompts from evaluation feedback.</p>
+                <p>
+                  Generates initial prompt candidates and creates improved child
+                  prompts from evaluation feedback.
+                </p>
               </article>
               <article class="info-box">
                 <h3>Gemini Performer</h3>
-                <p>Runs each selected candidate against a shared sample and returns the response that is evaluated.</p>
+                <p>
+                  Runs each selected candidate against a shared sample and
+                  returns the response that is evaluated.
+                </p>
               </article>
               <article class="info-box">
                 <h3>Groq Judge</h3>
-                <p>Evaluates the Performer response against the confirmed TaskIntent and task-specific rubric. The backend validates criterion weights and calculates the normalized reward.</p>
+                <p>
+                  Evaluates the Performer response against the confirmed
+                  TaskIntent and task-specific rubric. The backend validates
+                  criterion weights and calculates the normalized reward.
+                </p>
               </article>
               <article class="info-box">
                 <h3>Stage A — Feedback improvement</h3>
-                <p>Uses a parent candidate’s own Judge feedback, with session insights as additional context, to generate a new child prompt while preserving intent.</p>
+                <p>
+                  Uses a parent candidate’s own Judge feedback, with session
+                  insights as additional context, to generate a new child prompt
+                  while preserving intent.
+                </p>
               </article>
               <article class="info-box">
                 <h3>Stage B — UCB selection</h3>
-                <p>Selects which existing candidates to evaluate next using their reward history and an exploration term. UCB selects candidates; it does not rewrite prompts.</p>
+                <p>
+                  Selects which existing candidates to evaluate next using their
+                  reward history and an exploration term. UCB selects
+                  candidates; it does not rewrite prompts.
+                </p>
               </article>
               <article class="info-box">
                 <h3>Final evaluation and report</h3>
-                <p>Re-evaluates finalists and the original prompt baseline, ranks candidates using final scores, and creates a PDF from session data.</p>
+                <p>
+                  Re-evaluates finalists and the original prompt baseline, ranks
+                  candidates using final scores, and creates a PDF from session
+                  data.
+                </p>
               </article>
             </div>
             <section class="session-section">
               <h3>Session and provider notes</h3>
               <ul>
-                <li>Session data is held in server memory and is lost when the server restarts.</li>
-                <li>With mock mode enabled, local development responses are marked as mock and do not represent live provider results.</li>
-                <li>Live mode uses Gemini for optimization and performance, and Groq for judging.</li>
-                <li>Judge scores are estimates and do not guarantee an objectively best prompt.</li>
+                <li>
+                  Session data is held in server memory and is lost when the
+                  server restarts.
+                </li>
+                <li>
+                  With mock mode enabled, local development responses are marked
+                  as mock and do not represent live provider results.
+                </li>
+                <li>
+                  Live mode uses Gemini for optimization and performance, and
+                  Groq for judging.
+                </li>
+                <li>
+                  Judge scores are estimates and do not guarantee an objectively
+                  best prompt.
+                </li>
               </ul>
             </section>
           </div>

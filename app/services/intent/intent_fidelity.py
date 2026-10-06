@@ -12,12 +12,12 @@ def analyze_intent_fidelity(task_spec: dict[str, Any], candidate_prompt: str) ->
         if isinstance(item, str) and item.lower() in prompt_lower:
             matched.append(item)
 
-    audience = task_spec.get("audience", "general audience")
+    audience = task_spec.get("audience")
     score = 0.9
     if matched:
         score -= min(0.6, 0.12 * len(matched))
 
-    if "five" in prompt_lower and "5-year-old" in str(audience).lower():
+    if audience and "five" in prompt_lower and "5-year-old" in str(audience).lower():
         if not any(item in prompt_lower for item in ["simple", "easy", "sunlight", "water", "air"]):
             score -= 0.1
 

@@ -15,6 +15,7 @@ class Settings:
     gemini_performer_api_key: str | None = None
     gemini_api_key: str | None = None
     groq_api_key: str | None = None
+    final_evaluation_groq_api_key: str | None = None
     port: int = 8000
     optimizer_model: str = "gemini-2.0-flash"
     performer_model: str = "gemini-2.0-flash"
@@ -56,8 +57,25 @@ class Settings:
         return bool(self.groq_api_key)
 
     @property
+    def has_final_evaluation_groq_config(self) -> bool:
+        return bool(self.final_evaluation_groq_api_key)
+
+    @property
     def has_llm_config(self) -> bool:
         return self.has_optimizer_config and self.has_performer_config and self.has_groq_config
+
+    @property
+    def optimization_defaults(self) -> dict[str, int | float]:
+        return {
+            "active_candidates": self.default_active_candidates,
+            "edited_candidates": self.default_edited_candidates,
+            "max_iterations": self.default_max_iterations,
+            "final_top_n": self.default_final_top_n,
+            "ucb_c": self.default_ucb_c,
+            "stagnation_limit": self.default_stagnation_limit,
+            "min_improvement": self.default_min_improvement,
+            "max_llm_calls": self.default_max_llm_calls,
+        }
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -85,6 +103,11 @@ def get_settings() -> Settings:
         gemini_performer_api_key=os.getenv("GEMINI_PERFORMER_API_KEY") or None,
         gemini_api_key=legacy_gemini,
         groq_api_key=os.getenv("GROQ_API_KEY") or None,
+        final_evaluation_groq_api_key=(
+            os.getenv("FINAL_EVAL_GROQ_API_KEY")
+            or os.getenv("FINAL_EVALUATION_GROQ_API_KEY")
+            or None
+        ),
         port=_coerce_int(os.getenv("PORT"), 8000),
         optimizer_model=os.getenv("GEMINI_OPTIMIZER_MODEL") or os.getenv("OPTIMIZER_MODEL") or "gemini-2.0-flash",
         performer_model=os.getenv("GEMINI_PERFORMER_MODEL") or os.getenv("PERFORMER_MODEL") or "gemini-2.0-flash",

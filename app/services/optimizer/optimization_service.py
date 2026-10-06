@@ -39,11 +39,18 @@ class BudgetExhausted(RuntimeError):
     pass
 
 
+STAGE_A_MAX_CHILD_ATTEMPTS = 5
+FINAL_EVAL_MAX_ATTEMPTS = 5
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 class OptimizationService:
+    STAGE_A_MAX_CHILD_ATTEMPTS = STAGE_A_MAX_CHILD_ATTEMPTS
+    FINAL_EVAL_MAX_ATTEMPTS = FINAL_EVAL_MAX_ATTEMPTS
+
     def __init__(self) -> None:
         self.settings = get_settings()
         self.generator = CandidateGenerator()
@@ -315,6 +322,71 @@ class OptimizationService:
                 raise last_error
             raise RuntimeError(f"{provider} remains rate limited after {max_attempts - 1} retries.")
         return result
+
+    def _record_stage_a_child_failure(
+        self,
+        session: dict[str, Any],
+        parent: dict[str, Any],
+        attempt_count: int,
+        reason: str,
+    ) -> None:
+        failure = {
+            "candidate_id": parent.get("candidate_id"),
+            "parent_id": parent.get("parent_id"),
+            "attempts": attempt_count,
+            "reason": reason,
+            "created_at": _now(),
+        }
+        session.setdefault("errors", []).append(failure)
+        session.setdefault("stage_a_failures", []).append(failure)
+
+    def _generate_stage_a_child(
+        self,
+        session: dict[str, Any],
+        parent: dict[str, Any],
+        feedback: dict[str, Any],
+        task_spec: dict[str, Any],
+        *,
+        rubric: dict[str, Any] | None = None,
+        insights: list[dict[str, Any]] | None = None,
+        original_prompt: str = "",
+        iteration: int = 0,
+        existing_prompts: list[str] | None = None,
+        reserve_calls: int = 0,
+    ) -> list[dict[str, Any]]:
+        for attempt in range(1, STAGE_A_MAX_CHILD_ATTEMPTS + 1):
+            try:
+                return self._retry_provider_call(
+                    session,
+                    "Gemini Optimizer",
+                    lambda: self.generator.generate_edited(
+                        parent,
+                        feedback,
+                        task_spec,
+                        count=1,
+                        rubric=rubric,
+                        insights=insights,
+                        original_prompt=original_prompt,
+                        iteration=iteration,
+                        existing_prompts=existing_prompts,
+                        on_llm_call=lambda: self._charge(
+                            session,
+                            reserve_calls=reserve_calls,
+                        ),
+                    ),
+                )
+            except BudgetExhausted:
+                session["stop_reason"] = "budget_exhausted"
+                return []
+            except Exception as exc:
+                if attempt >= STAGE_A_MAX_CHILD_ATTEMPTS:
+                    reason = "Stage A child-generation failed after 5 attempts."
+                    self._record_stage_a_child_failure(session, parent, attempt, reason)
+                    return []
+                if isinstance(exc, RuntimeError) and "budget" in str(exc).lower():
+                    session["stop_reason"] = "budget_exhausted"
+                    return []
+        return []
 
     def _update_best_metrics(self, session: dict[str, Any]) -> bool:
         scored = [
@@ -602,34 +674,27 @@ class OptimizationService:
                 "criterion_scores": evaluation["criterion_scores"],
                 "evidence": evaluation["evidence"],
             }
-            try:
-                children = self._retry_provider_call(
-                    session,
-                    "Gemini Optimizer",
-                    lambda: self.generator.generate_edited(
-                        parent,
-                        feedback,
-                        session["task_spec"],
-                        count=1,
-                        rubric=session["rubric"],
-                        insights=previous_insights,
-                        original_prompt=session["original_prompt"],
-                        iteration=round_number,
-                        existing_prompts=[item["prompt_text"] for item in session["candidates"]],
-                        on_llm_call=lambda: self._charge(
-                            session,
-                            reserve_calls=(
-                                remaining_edits
-                                + future_round_reserve
-                                + token_count_reserve
-                                + final_evaluation_reserve
-                            ),
-                        ),
-                    ),
-                )
-            except BudgetExhausted:
-                session["stop_reason"] = "budget_exhausted"
-                break
+            children = self._generate_stage_a_child(
+                session,
+                parent,
+                feedback,
+                session["task_spec"],
+                rubric=session["rubric"],
+                insights=previous_insights,
+                original_prompt=session["original_prompt"],
+                iteration=round_number,
+                existing_prompts=[item["prompt_text"] for item in session["candidates"]],
+                reserve_calls=(
+                    remaining_edits
+                    + future_round_reserve
+                    + token_count_reserve
+                    + final_evaluation_reserve
+                ),
+            )
+            if not children:
+                if session.get("stop_reason") == "budget_exhausted":
+                    break
+                continue
             for child in children:
                 append_candidate(session_id, child)
                 new_candidates.append(child)
@@ -875,98 +940,125 @@ class OptimizationService:
                 break
             remaining_samples = len(session["samples"]) - sample_index - 1
             remaining_final_calls = remaining_samples * 2
-            try:
-                performer_results = self._retry_provider_call(
-                    session,
-                    "Gemini Performer",
-                    lambda: self.performer.execute_batch(
-                        [
-                            {
-                                "candidate_id": item["candidate_id"],
-                                "prompt_text": item["prompt_text"],
-                                "sample": sample["content"],
-                            }
-                            for item in final_targets
-                        ],
-                        self.settings.performer_model,
-                        on_llm_call=lambda: self._charge(
-                            session, reserve_calls=1 + remaining_final_calls
+            for attempt in range(1, FINAL_EVAL_MAX_ATTEMPTS + 1):
+                try:
+                    performer_results = self._retry_provider_call(
+                        session,
+                        "Gemini Performer",
+                        lambda: self.performer.execute_batch(
+                            [
+                                {
+                                    "candidate_id": item["candidate_id"],
+                                    "prompt_text": item["prompt_text"],
+                                    "sample": sample["content"],
+                                }
+                                for item in final_targets
+                            ],
+                            self.settings.performer_model,
+                            on_llm_call=lambda: self._charge(
+                                session, reserve_calls=1 + remaining_final_calls
+                            ),
                         ),
-                    ),
-                )
-            except BudgetExhausted:
-                session["stop_reason"] = "budget_exhausted"
-                break
-            if session.get("status") == "cancelled" or performer_results is None:
-                break
-            update_session(
-                session_id,
-                completed_performer_calls=int(session.get("completed_performer_calls", 0))
-                + len(performer_results),
-            )
-            try:
-                judge_results = self._retry_provider_call(
-                    session,
-                    "Groq Judge",
-                    lambda: self.judge.evaluate_batch(
-                        session["task_spec"],
-                        session["rubric"]["criteria"],
-                        [
-                            {
-                                "candidate_id": item["candidate_id"],
-                                "candidate_prompt": item["prompt_text"],
-                                "sample": sample["content"],
-                                "response_text": performer_results[item["candidate_id"]]["response_text"],
-                            }
-                            for item in final_targets
-                        ],
-                        on_llm_call=lambda: self._charge(
-                            session, reserve_calls=remaining_final_calls
-                        ),
-                    ),
-                )
-            except BudgetExhausted:
-                session["stop_reason"] = "budget_exhausted"
-                break
-            if session.get("status") == "cancelled" or judge_results is None:
-                break
-            update_session(
-                session_id,
-                completed_judge_calls=int(session.get("completed_judge_calls", 0))
-                + len(judge_results),
-            )
-            for item in final_targets:
-                candidate_id = item["candidate_id"]
-                performer_result = performer_results[candidate_id]
-                judge_result = judge_results[candidate_id]
-                result = {
-                    "sample_id": sample["sample_id"],
-                    "response": performer_result["response_text"],
-                    "authoritative_score": judge_result["authoritative_score"],
-                    "criterion_scores": judge_result["criterion_scores"],
-                    "feedback": {
-                        "strengths": judge_result["strengths"],
-                        "weaknesses": judge_result["weaknesses"],
-                        "evidence": judge_result["evidence"],
-                        "root_cause": judge_result["root_cause"],
-                        "improvement_suggestion": judge_result["improvement_suggestion"],
-                    },
-                    "source": "mock"
-                    if "mock" in {performer_result["source"], judge_result["source"]}
-                    else "live",
-                    "status": "mock"
-                    if "mock" in {performer_result["source"], judge_result["source"]}
-                    else "success",
-                    "performer_model": performer_result["model"],
-                    "judge_model": judge_result["model"],
-                }
-                if candidate_id == baseline_id:
-                    baseline_evaluations.append(result)
-                else:
-                    finalist_scores[candidate_id].append(
-                        float(result["authoritative_score"])
                     )
-                    sample_evaluations.append({"candidate_id": candidate_id, **result})
+                except BudgetExhausted:
+                    session["stop_reason"] = "budget_exhausted"
+                    break
+                except Exception as exc:
+                    if attempt >= FINAL_EVAL_MAX_ATTEMPTS:
+                        session.setdefault("errors", []).append({
+                            "stage": "final_evaluation",
+                            "attempts": attempt,
+                            "error": type(exc).__name__,
+                            "error_code": classify_provider_exception(exc),
+                        })
+                        session["stop_reason"] = "critical_failure"
+                        break
+                    continue
+
+                if session.get("status") == "cancelled" or performer_results is None:
+                    break
+                update_session(
+                    session_id,
+                    completed_performer_calls=int(session.get("completed_performer_calls", 0))
+                    + len(performer_results),
+                )
+                try:
+                    judge_results = self._retry_provider_call(
+                        session,
+                        "Groq Judge",
+                        lambda: self.judge.evaluate_batch(
+                            session["task_spec"],
+                            session["rubric"]["criteria"],
+                            [
+                                {
+                                    "candidate_id": item["candidate_id"],
+                                    "candidate_prompt": item["prompt_text"],
+                                    "sample": sample["content"],
+                                    "response_text": performer_results[item["candidate_id"]]["response_text"],
+                                }
+                                for item in final_targets
+                            ],
+                            on_llm_call=lambda: self._charge(
+                                session, reserve_calls=remaining_final_calls
+                            ),
+                            final_evaluation=True,
+                        ),
+                    )
+                except BudgetExhausted:
+                    session["stop_reason"] = "budget_exhausted"
+                    break
+                except Exception as exc:
+                    if attempt >= FINAL_EVAL_MAX_ATTEMPTS:
+                        session.setdefault("errors", []).append({
+                            "stage": "final_evaluation",
+                            "attempts": attempt,
+                            "error": type(exc).__name__,
+                            "error_code": classify_provider_exception(exc),
+                        })
+                        session["stop_reason"] = "critical_failure"
+                        break
+                    continue
+
+                if session.get("status") == "cancelled" or judge_results is None:
+                    break
+                update_session(
+                    session_id,
+                    completed_judge_calls=int(session.get("completed_judge_calls", 0))
+                    + len(judge_results),
+                )
+                for item in final_targets:
+                    candidate_id = item["candidate_id"]
+                    performer_result = performer_results[candidate_id]
+                    judge_result = judge_results[candidate_id]
+                    result = {
+                        "sample_id": sample["sample_id"],
+                        "response": performer_result["response_text"],
+                        "authoritative_score": judge_result["authoritative_score"],
+                        "criterion_scores": judge_result["criterion_scores"],
+                        "feedback": {
+                            "strengths": judge_result["strengths"],
+                            "weaknesses": judge_result["weaknesses"],
+                            "evidence": judge_result["evidence"],
+                            "root_cause": judge_result["root_cause"],
+                            "improvement_suggestion": judge_result["improvement_suggestion"],
+                        },
+                        "source": "mock"
+                        if "mock" in {performer_result["source"], judge_result["source"]}
+                        else "live",
+                        "status": "mock"
+                        if "mock" in {performer_result["source"], judge_result["source"]}
+                        else "success",
+                        "performer_model": performer_result["model"],
+                        "judge_model": judge_result["model"],
+                    }
+                    if candidate_id == baseline_id:
+                        baseline_evaluations.append(result)
+                    else:
+                        finalist_scores[candidate_id].append(
+                            float(result["authoritative_score"])
+                        )
+                        sample_evaluations.append({"candidate_id": candidate_id, **result})
+                break
         for candidate in finalists:
             scores = finalist_scores[candidate["candidate_id"]]
             candidate["final_score"] = (
@@ -997,6 +1089,7 @@ class OptimizationService:
         ]
         ranked.sort(key=lambda item: (-item["score"], item["candidate_id"]))
         top_n = int(session["configuration"]["final_top_n"])
+        termination_reason = session.get("stop_reason")
         final_data = {
             "finalists": ranked,
             "baseline": {
@@ -1006,7 +1099,8 @@ class OptimizationService:
             },
             "final_ranking": ranked,
             "top3": ranked[:min(3, top_n)],
-            "stop_reason": session.get("stop_reason"),
+            "termination_reason": termination_reason,
+            "stop_reason": None if termination_reason in {None, "max_iterations", "stagnation"} and ranked else termination_reason,
             "created_at": _now(),
         }
         terminal_status = (

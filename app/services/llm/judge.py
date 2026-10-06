@@ -97,6 +97,11 @@ class JudgeClient:
     def __init__(self) -> None:
         self.settings = get_settings()
 
+    def _resolve_groq_api_key(self, *, final_evaluation: bool = False) -> str | None:
+        if final_evaluation:
+            return self.settings.final_evaluation_groq_api_key or self.settings.groq_api_key
+        return self.settings.groq_api_key
+
     def _utc_now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
@@ -157,6 +162,7 @@ class JudgeClient:
         sample: str,
         response_text: str,
         on_llm_call: Callable[[], None] | None = None,
+        final_evaluation: bool = False,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         if self.settings.allow_mock_llms:
@@ -164,12 +170,14 @@ class JudgeClient:
             self._validate_against_rubric(output, rubric)
             source = "mock"
         else:
-            if not self.settings.has_groq_config:
-                raise RuntimeError("GROQ_API_KEY is not configured.")
+            api_key = self._resolve_groq_api_key(final_evaluation=final_evaluation)
+            if not api_key:
+                scope = "final evaluation" if final_evaluation else "Groq Judge"
+                raise RuntimeError(f"{scope} requires a Groq API key. Configure GROQ_API_KEY or FINAL_EVAL_GROQ_API_KEY.")
             from openai import OpenAI
 
             client = OpenAI(
-                api_key=self.settings.groq_api_key,
+                api_key=api_key,
                 base_url="https://api.groq.com/openai/v1",
                 timeout=45.0,
                 max_retries=0,
@@ -245,6 +253,7 @@ class JudgeClient:
         rubric: list[dict[str, Any]],
         evaluations: list[dict[str, str]],
         on_llm_call: Callable[[], None] | None = None,
+        final_evaluation: bool = False,
     ) -> dict[str, dict[str, Any]]:
         if not evaluations:
             return {}
@@ -271,12 +280,14 @@ class JudgeClient:
                 }
             return results
 
-        if not self.settings.has_groq_config:
-            raise RuntimeError("GROQ_API_KEY is not configured.")
+        api_key = self._resolve_groq_api_key(final_evaluation=final_evaluation)
+        if not api_key:
+            scope = "final evaluation" if final_evaluation else "Groq Judge"
+            raise RuntimeError(f"{scope} requires a Groq API key. Configure GROQ_API_KEY or FINAL_EVAL_GROQ_API_KEY.")
         from openai import OpenAI
 
         client = OpenAI(
-            api_key=self.settings.groq_api_key,
+            api_key=api_key,
             base_url="https://api.groq.com/openai/v1",
             timeout=45.0,
             max_retries=0,

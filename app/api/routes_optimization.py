@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
+from app.core.config import get_settings
 from app.schemas.task import IntentEditRequest, OptimizationStartRequest
 from app.services.optimizer.optimization_service import OptimizationService
 from app.services.pdf.report_generator import ReportGenerator
@@ -22,6 +23,12 @@ from app.state.session_state import get_session, update_session
 router = APIRouter(prefix="/api/optimization")
 service = OptimizationService()
 logger = logging.getLogger(__name__)
+
+
+@router.get("/defaults")
+async def get_optimization_defaults():
+    settings = get_settings()
+    return {"success": True, "data": settings.optimization_defaults}
 
 
 @router.post("/start")

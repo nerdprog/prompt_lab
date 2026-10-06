@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class TaskIntent(BaseModel):
     task_category: str = "general"
     primary_intent: str = Field(..., min_length=1, max_length=4000)
+    user_background: str | None = Field(default=None, max_length=1000)
+    user_knowledge_level: str | None = Field(default=None, max_length=1000)
     audience: str | None = Field(default=None, max_length=1000)
     desired_complexity: str | None = Field(default=None, max_length=1000)
     language: str | None = Field(default=None, max_length=1000)
@@ -16,6 +18,10 @@ class TaskIntent(BaseModel):
     explicit_requirements: list[str] = Field(default_factory=list, max_length=100)
     inferred_requirements: list[str] = Field(default_factory=list, max_length=100)
     constraints: list[str] = Field(default_factory=list, max_length=100)
+    negative_constraints: list[str] = Field(default_factory=list, max_length=100)
+    conditions: list[str] = Field(default_factory=list, max_length=100)
+    scope: str | None = Field(default=None, max_length=1000)
+    quantity: str | None = Field(default=None, max_length=1000)
     forbidden_assumptions: list[str] = Field(default_factory=list, max_length=100)
     ambiguities: list[str] = Field(default_factory=list, max_length=100)
     confidence: float = Field(ge=0.0, le=1.0, default=0.8)

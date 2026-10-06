@@ -14,6 +14,8 @@ TASK_INTENT_RESPONSE_SCHEMA = {
     "properties": {
         "task_category": {"type": "STRING"},
         "primary_intent": {"type": "STRING"},
+        "user_background": {"type": "STRING"},
+        "user_knowledge_level": {"type": "STRING"},
         "audience": {"type": "STRING"},
         "desired_complexity": {"type": "STRING"},
         "language": {"type": "STRING"},
@@ -22,6 +24,10 @@ TASK_INTENT_RESPONSE_SCHEMA = {
         "explicit_requirements": {"type": "ARRAY", "items": {"type": "STRING"}},
         "inferred_requirements": {"type": "ARRAY", "items": {"type": "STRING"}},
         "constraints": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "negative_constraints": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "conditions": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "scope": {"type": "STRING"},
+        "quantity": {"type": "STRING"},
         "forbidden_assumptions": {"type": "ARRAY", "items": {"type": "STRING"}},
         "ambiguities": {"type": "ARRAY", "items": {"type": "STRING"}},
         "confidence": {"type": "NUMBER"},
@@ -29,6 +35,8 @@ TASK_INTENT_RESPONSE_SCHEMA = {
     "required": [
         "task_category",
         "primary_intent",
+        "user_background",
+        "user_knowledge_level",
         "audience",
         "desired_complexity",
         "language",
@@ -37,6 +45,10 @@ TASK_INTENT_RESPONSE_SCHEMA = {
         "explicit_requirements",
         "inferred_requirements",
         "constraints",
+        "negative_constraints",
+        "conditions",
+        "scope",
+        "quantity",
         "forbidden_assumptions",
         "ambiguities",
         "confidence",
@@ -63,6 +75,25 @@ def detect_task_type(prompt: str) -> str:
     return "general"
 
 
+def _clean_phrase(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = re.sub(r"\s+", " ", value).strip(" .;,!?()[]{}")
+    if not cleaned:
+        return None
+    words = cleaned.split()
+    normalized_words: list[str] = []
+    for index, word in enumerate(words):
+        lowered = word.lower()
+        if lowered in {"devops", "docker", "kubernetes", "linux", "networking", "python", "java"}:
+            normalized_words.append(word.lower().replace("devops", "DevOps").replace("docker", "Docker").replace("kubernetes", "Kubernetes").replace("linux", "Linux").replace("networking", "Networking").replace("python", "Python").replace("java", "Java"))
+        elif index == 0:
+            normalized_words.append(word.capitalize())
+        else:
+            normalized_words.append(word.lower())
+    return " ".join(normalized_words)
+
+
 def _extract_age_hint(prompt: str) -> str | None:
     lowered = prompt.lower()
     if "i am five" in lowered or "i'm five" in lowered or "am five" in lowered:
@@ -75,6 +106,125 @@ def _extract_age_hint(prompt: str) -> str | None:
     return None
 
 
+def _extract_user_background(prompt: str) -> str | None:
+    lowered = prompt.lower()
+    for pattern in (
+        r"\b(?:i'm|i am|i’m)\s+(?:an?|a)\s+(.+?)(?=\s*(?:[.;!?]|$))",
+        r"\b(?:i work as|i worked as|my background is|my experience is)\s+(.+?)(?=\s*(?:[.;!?]|$))",
+    ):
+        match = re.search(pattern, lowered)
+        if match:
+            candidate = match.group(1).strip()
+            if any(token in candidate for token in ["new to", "beginner", "novice", "completely new"]):
+                continue
+            return _clean_phrase(candidate)
+    return None
+
+
+def _extract_user_knowledge_level(prompt: str) -> str | None:
+    lowered = prompt.lower()
+    if "like i'm" in lowered or "like i am" in lowered:
+        if "new to" in lowered or "completely new" in lowered:
+            return None
+    if re.search(r"\b(?:i'm|i am|i’m)\s+(?:completely\s+)?new\s+to\s+([a-z0-9-]+(?:\s+[a-z0-9-]+)*)", lowered):
+        match = re.search(r"\b(?:i'm|i am|i’m)\s+(?:completely\s+)?new\s+to\s+([a-z0-9-]+(?:\s+[a-z0-9-]+)*)", lowered)
+        if match:
+            return f"new to {match.group(1).strip()}"
+    if "assume i already understand" in lowered:
+        known = re.search(r"assume i already understand\s+(.+?)\s*(?:[.;!?]|$)", lowered)
+        if known:
+            return f"already understands {known.group(1).strip()}"
+    if "i already understand" in lowered:
+        known = re.search(r"i already understand\s+(.+?)\s*(?:[.;!?]|$)", lowered)
+        if known:
+            return f"already understands {known.group(1).strip()}"
+    if "i know" in lowered or "i understand" in lowered:
+        known = re.search(r"(?:i know|i understand)\s+(.+?)\s*(?:[.;!?]|$)", lowered)
+        if known:
+            return f"knows {known.group(1).strip()}"
+    return None
+
+
+def _extract_audience(prompt: str) -> str | None:
+    lowered = prompt.lower()
+    for phrase in ("to a beginner", "for a beginner", "for beginners", "to beginners"):
+        if phrase in lowered:
+            return "beginner"
+    age_match = re.search(r"(?:to|for)\s+(?:my|our|the)\s+([a-z0-9-]+(?:\s+[a-z0-9-]+){0,6})", lowered)
+    if age_match:
+        candidate = age_match.group(1).strip()
+        if any(token in candidate for token in ["daughter", "son", "child", "kid", "team", "students", "engineers", "audience", "reader"]):
+            return _clean_phrase(candidate)
+    if "for my 10-year-old daughter" in lowered or "to my 10-year-old daughter" in lowered:
+        return "10-year-old daughter"
+    if "for our engineering team" in lowered or "to our engineering team" in lowered:
+        return "engineering team"
+    return None
+
+
+def _extract_desired_complexity(prompt: str) -> str | None:
+    lowered = prompt.lower()
+    if "like i\'m completely new to it" in lowered or "like i am completely new to it" in lowered or "completely new to it" in lowered:
+        return "beginner / new to the topic"
+    if "from scratch" in lowered:
+        return "beginner / from scratch"
+    if "advanced" in lowered or "expert" in lowered or "deep dive" in lowered:
+        return "advanced / expert-level"
+    if "very detailed" in lowered or "in depth" in lowered:
+        return "very detailed"
+    if "brief" in lowered or "quick overview" in lowered:
+        return "brief"
+    if "simple" in lowered or "easy" in lowered or "plain english" in lowered:
+        return "simple / beginner-friendly"
+    if "beginner" in lowered or "new to" in lowered:
+        return "beginner / new to the topic"
+    return None
+
+
+def _extract_output_format(prompt: str) -> str | None:
+    lowered = prompt.lower()
+    if "table" in lowered and ("compare" in lowered or "comparing" in lowered):
+        return "table"
+    if "bullet points" in lowered or "bullets" in lowered:
+        return "bullet list"
+    if "step-by-step" in lowered or "step by step" in lowered:
+        return "step-by-step guide"
+    if "email" in lowered:
+        return "email"
+    if "code" in lowered:
+        return "code"
+    if "list" in lowered and re.search(r"\b\d+\b.*\b(list|items|points)\b", lowered):
+        return "list"
+    return None
+
+
+def _extract_quantity(prompt: str) -> str | None:
+    m = re.search(r"\b(\d+)\s+(?:bullet|bullets|points|items|steps|examples)\b", prompt.lower())
+    if m:
+        return m.group(1)
+    return None
+
+
+def _extract_style(prompt: str) -> str | None:
+    lowered = prompt.lower()
+    if "real-world analogy" in lowered or "real world analogy" in lowered:
+        return "real-world analogy"
+    if "plain english" in lowered or "plain-language" in lowered:
+        return "plain English"
+    if "using analogies" in lowered or "analogy" in lowered:
+        return "analogy-based"
+    return None
+
+
+def _collect_conditions(prompt: str) -> list[str]:
+    lowered = prompt.lower()
+    if "if" in lowered and ("otherwise" in lowered or "only if" in lowered):
+        return ["Preserve the conditional logic stated by the user."]
+    if "only include code if it is necessary" in lowered:
+        return ["Include code only if necessary."]
+    return []
+
+
 def understand_task(prompt: str, optional_context: str | None = None) -> TaskIntent:
     cleaned = (prompt or "").strip()
     if not cleaned:
@@ -82,85 +232,97 @@ def understand_task(prompt: str, optional_context: str | None = None) -> TaskInt
 
     task_type = detect_task_type(cleaned)
     age_hint = _extract_age_hint(cleaned)
-    audience = age_hint or "general audience"
+    user_background = _extract_user_background(cleaned)
+    user_knowledge_level = _extract_user_knowledge_level(cleaned)
+    audience = _extract_audience(cleaned)
+    desired_complexity = _extract_desired_complexity(cleaned)
+    output_format = _extract_output_format(cleaned)
+    style = _extract_style(cleaned)
+    quantity = _extract_quantity(cleaned)
+    conditions = _collect_conditions(cleaned)
 
     explicit_requirements: list[str] = []
     constraints: list[str] = []
+    negative_constraints: list[str] = []
     ambiguities: list[str] = []
     forbidden_assumptions: list[str] = []
 
-    if task_type == "explain_concept":
-        explicit_requirements.append("Explain the underlying concept clearly.")
-        constraints.append("Avoid unnecessary jargon unless user requests it.")
-        if age_hint:
-            explicit_requirements.append(f"Adapt the explanation to a {age_hint} audience.")
-            forbidden_assumptions.extend([
-                "kindergarten",
-                "counting to five",
-                "five fingers",
-                "birthday assumptions",
-                "child brain development"
-            ])
-    elif task_type == "planning":
-        explicit_requirements.append("Create a practical plan with structure.")
-        constraints.append("Respect available time and constraints when stated.")
-    elif task_type == "email":
-        explicit_requirements.append("Write a polished email targeted at the recipient.")
-        constraints.append("Maintain a consistent tone and purpose.")
-    elif task_type == "coding":
-        explicit_requirements.append("Produce valid, relevant code or guidance.")
-        constraints.append("Respect the user's constraints, stack, and requirements.")
-    else:
-        explicit_requirements.append("Answer the user's request directly and usefully.")
+    if user_background:
+        explicit_requirements.append(f"User background: {user_background}")
+    if user_knowledge_level:
+        explicit_requirements.append(f"User knowledge: {user_knowledge_level}")
+    if audience:
+        explicit_requirements.append(f"Audience: {audience}")
+    if desired_complexity:
+        explicit_requirements.append(f"Desired complexity: {desired_complexity}")
+    if output_format:
+        explicit_requirements.append(f"Output format: {output_format}")
+    if quantity:
+        explicit_requirements.append(f"Quantity: {quantity}")
+    if style:
+        explicit_requirements.append(f"Style: {style}")
 
-    if "I am five" in cleaned.lower() or age_hint == "5-year-old":
-        audience = "5-year-old child"
-        explicit_requirements.append("Use very simple language for a young child.")
-        constraints.append("Avoid scientific jargon.")
-        constraints.append("Use short sentences and everyday examples.")
-        forbidden_assumptions.extend([
-            "kindergarten",
-            "counting to five",
-            "five fingers",
-            "five toys",
-            "birthday assumptions",
-            "child psychology",
-            "brain development"
-        ])
-
+    if "don't use unnecessary jargon" in cleaned.lower() or "avoid unnecessary jargon" in cleaned.lower():
+        negative_constraints.append("Avoid unnecessary jargon.")
+    if "don't use jargon" in cleaned.lower() or "avoid jargon" in cleaned.lower():
+        negative_constraints.append("Avoid jargon.")
+    if "if" in cleaned.lower() and conditions:
+        constraints.extend(conditions)
     if optional_context:
         explicit_requirements.append("Consider the provided additional context.")
 
-    if not any(token in cleaned.lower() for token in ["format", "list", "steps", "email", "code", "paragraph", "example"]):
-        ambiguities.append("The output format is not explicitly specified; a clear, well-structured answer is assumed.")
+    if user_background and desired_complexity and "new" in desired_complexity.lower() and not re.search(r"\b(?:advanced|expert|deep dive)\b", cleaned.lower()):
+        forbidden_assumptions.append("Do not assume the user wants an advanced explanation solely because of their background.")
+    if ("detailed" in cleaned.lower() or "detailed" in cleaned.lower()) and ("short" in cleaned.lower() or "brief" in cleaned.lower()):
+        ambiguities.append("The prompt mixes detailed and concise length requirements; both should be preserved as stated.")
 
-    primary_intent = cleaned
+    primary_intent = "Answer the user's request"
+    lower = cleaned.lower()
     if task_type == "explain_concept":
-        primary_intent = "Understand the topic being explained"
+        primary_intent = "Explain the requested concept"
     elif task_type == "planning":
         primary_intent = "Create a useful plan"
     elif task_type == "email":
         primary_intent = "Draft an effective email"
     elif task_type == "coding":
-        primary_intent = "Solve the coding/problem task"
+        primary_intent = "Solve the coding or debugging task"
+    if "write" in lower and "code" in lower:
+        primary_intent = "Write the requested code"
+    if "compare" in lower and "table" in lower:
+        primary_intent = "Compare the requested items in a structured form"
 
     if age_hint:
-        primary_intent = "Understand the requested topic for the specified audience"
+        audience = audience or f"{age_hint} child"
+
+    if age_hint:
+        constraints.extend([
+            "Avoid scientific jargon.",
+            "Use short sentences and everyday examples.",
+        ])
 
     return TaskIntent(
         task_category=task_type,
         primary_intent=primary_intent,
+        user_background=user_background,
+        user_knowledge_level=user_knowledge_level,
         audience=audience,
-        desired_complexity="Very simple" if age_hint else "Balanced",
-        language="Basic vocabulary" if age_hint else "Clear and natural",
-        output_format="Natural language answer" if task_type != "planning" else "Structured plan",
-        style="Short sentences and everyday examples" if age_hint else "Direct and helpful",
+        desired_complexity=desired_complexity,
+        language=None,
+        output_format=output_format,
+        style=style,
         explicit_requirements=explicit_requirements,
-        inferred_requirements=["Explain the issue clearly and adapt to the intended audience."],
+        inferred_requirements=[item for item in [
+            "Explain the topic clearly and faithfully to the user's stated background and intent.",
+            "Respect the user's explicit constraints and conditions.",
+        ] if item],
         constraints=constraints,
+        negative_constraints=negative_constraints,
+        conditions=conditions,
+        scope=None,
+        quantity=quantity,
         forbidden_assumptions=list(dict.fromkeys(forbidden_assumptions)),
         ambiguities=ambiguities,
-        confidence=0.88,
+        confidence=0.9,
     )
 
 

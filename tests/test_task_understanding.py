@@ -5,7 +5,19 @@ from types import SimpleNamespace
 
 from google import genai
 
-from app.services.intent.task_understanding import understand_task_from_llm
+from app.services.intent.task_understanding import understand_task, understand_task_from_llm
+
+
+def test_semantic_roles_are_preserved_for_background_and_complexity_mismatch():
+    task = understand_task("I'm an experienced DevOps engineer. Explain Docker like I'm completely new to it.")
+
+    assert task.user_background == "Experienced DevOps engineer"
+    assert task.user_knowledge_level is None
+    assert task.audience is None
+    assert task.desired_complexity is not None
+    assert "new" in task.desired_complexity.lower() or "beginner" in task.desired_complexity.lower()
+    assert task.output_format is None
+    assert any("advanced" in item.lower() for item in task.forbidden_assumptions) or task.forbidden_assumptions
 
 
 def test_task_understanding_uses_schema_and_repairs_invalid_field_names(monkeypatch):

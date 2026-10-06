@@ -103,6 +103,82 @@ def test_call_budget_rejects_calls_after_limit(monkeypatch):
     assert session["llm_call_count"] == 1
 
 
+def test_stage_a_child_generation_stops_after_five_failed_attempts(monkeypatch):
+    monkeypatch.setenv("ALLOW_MOCK_LLMS", "false")
+    service = OptimizationService()
+    session = create_session("Prompt with sufficient length", config={"max_llm_calls": 100})
+    session["task_spec"] = {"primary_intent": "Explain the concept"}
+    session["rubric"] = {"criteria": []}
+    parent = {"candidate_id": "cand-parent", "prompt_text": "Explain the concept.", "generation": 0}
+    feedback = {"evaluation_id": "eval-1", "score": 0.7, "weaknesses": ["Too vague"], "root_cause": ["Missing detail"], "improvement_suggestion": ["Add a clearer example"], "criterion_scores": [], "evidence": []}
+    attempts = []
+
+    def fail_generation(*args, **kwargs):
+        attempts.append(True)
+        raise ValueError("Generated child is invalid.")
+
+    monkeypatch.setattr(service.generator, "generate_edited", fail_generation)
+
+    children = service._generate_stage_a_child(
+        session,
+        parent,
+        feedback,
+        session["task_spec"],
+        rubric=session["rubric"],
+        insights=[],
+        original_prompt="Prompt with sufficient length",
+        iteration=1,
+        existing_prompts=["Explain the concept."],
+        reserve_calls=0,
+    )
+
+    assert children == []
+    assert len(attempts) == service.STAGE_A_MAX_CHILD_ATTEMPTS
+    assert session["errors"][-1]["reason"] == "Stage A child-generation failed after 5 attempts."
+
+
+def test_final_evaluation_stops_after_five_failed_attempts(monkeypatch):
+    monkeypatch.setenv("ALLOW_MOCK_LLMS", "false")
+    service = OptimizationService()
+    session = create_session(
+        "Prompt with sufficient length",
+        config={"max_llm_calls": 100, "final_top_n": 2, "max_iterations": 1},
+    )
+    session["status"] = "running"
+    session["task_spec"] = {"primary_intent": "Explain the concept"}
+    session["rubric"] = {"criteria": []}
+    session["samples"] = [{"sample_id": "sample-1", "content": "Example sample"}]
+    session["candidates"] = [{
+        "candidate_id": "cand-1",
+        "prompt_text": "Prompt with sufficient length",
+        "status": "active",
+        "mean_reward": 0.9,
+        "parent_id": None,
+        "generation": 0,
+    }]
+    session["evaluations"] = [{"candidate_id": "cand-1", "status": "success"}]
+    session["configuration"] = {
+        "final_top_n": 2,
+        "max_iterations": 1,
+        "active_candidates": 1,
+        "edited_candidates": 1,
+        "max_llm_calls": 100,
+    }
+    attempts = []
+
+    def fail_final_call(*args, **kwargs):
+        attempts.append(True)
+        raise RuntimeError("Final evaluation failed.")
+
+    monkeypatch.setattr(service, "_retry_provider_call", fail_final_call)
+
+    final_data = service.finalize(session["session_id"])
+
+    assert len(attempts) == service.FINAL_EVAL_MAX_ATTEMPTS
+    assert final_data["finalists"] == []
+    assert session["final_evaluation"]["top3"] == []
+
+
 def test_cancelled_session_is_not_restarted_and_gets_partial_report(monkeypatch, tmp_path):
     monkeypatch.setenv("ALLOW_MOCK_LLMS", "true")
     monkeypatch.chdir(tmp_path)
